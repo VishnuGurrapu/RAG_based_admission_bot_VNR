@@ -32,6 +32,153 @@
   let sessionId = sessionStorage.getItem("chatbot_session") || generateId();
   sessionStorage.setItem("chatbot_session", sessionId);
   
+  // Language preference - check if user has explicitly selected a language
+  let currentLanguage = sessionStorage.getItem("chatbot_language") || "en";
+  let languageSelected = sessionStorage.getItem("chatbot_language_selected") === "true";
+  
+  // Debug logging
+  console.log("Chatbot initialized:", {
+    sessionId,
+    currentLanguage,
+    languageSelected,
+    version: "v20-multilingual"
+  });
+  
+  // Chat history is preserved in this session for context-aware responses
+  // The backend automatically uses conversation history for better answers
+
+  // ── Language Support ─────────────────────────────────────────
+  const SUPPORTED_LANGUAGES = {
+    en: { name: "English", native: "English", flag: "🇬🇧" },
+    hi: { name: "Hindi", native: "हिन्दी", flag: "🇮🇳" },
+    te: { name: "Telugu", native: "తెలుగు", flag: "🇮🇳" },
+    ta: { name: "Tamil", native: "தமிழ்", flag: "🇮🇳" },
+    mr: { name: "Marathi", native: "मराठी", flag: "🇮🇳" },
+    kn: { name: "Kannada", native: "ಕನ್ನಡ", flag: "🇮🇳" },
+  };
+
+  const TRANSLATIONS = {
+    welcome_title: {
+      en: "Hello! 👋 Welcome to the **VNRVJIET** assistant.",
+      hi: "नमस्ते! 👋 **VNRVJIET** सहायक में आपका स्वागत है।",
+      te: "నమస్కారం! 👋 **VNRVJIET** సహాయకునికి స్వాగతం।",
+      ta: "வணக்கம்! 👋 **VNRVJIET** உதவியாளருக்கு வரவேற்கிறோம்.",
+      mr: "नमस्कार! 👋 **VNRVJIET** सहाय्यकांमध्ये आपले स्वागत आहे.",
+      kn: "ನಮಸ್ಕಾರ! 👋 **VNRVJIET** ಸಹಾಯಕನಿಗೆ ಸ್ವಾಗತ.",
+    },
+    welcome_select_topic: {
+      en: "I can help you with the following topics. Please select one:",
+      hi: "मैं निम्नलिखित विषयों में आपकी मदद कर सकता/सकती हूं। कृपया एक चुनें:",
+      te: "నేను ఈ క్రింది అంశాలలో మీకు సహాయం చేయగలను. దయచేసి ఒకదాన్ని ఎంచుకోండి:",
+      ta: "நான் பின்வரும் தலைப்புகளில் உங்களுக்கு உதவ முடியும். தயவுசெய்து ஒன்றைத் தேர்ந்தெடுக்கவும்:",
+      mr: "मी खालील विषयांमध्ये तुमची मदत करू शकतो. कृपया एक निवडा:",
+      kn: "ನಾನು ಈ ಕೆಳಗಿನ ವಿಷಯಗಳಲ್ಲಿ ನಿಮಗೆ ಸಹಾಯ ಮಾಡಬಹುದು. ದಯವಿಟ್ಟು ಒಂದನ್ನು ಆಯ್ಕೆಮಾಡಿ:",
+    },
+    language_prompt: {
+      en: "Please select your preferred language:",
+      hi: "कृपया अपनी पसंदीदा भाषा चुनें:",
+      te: "దయచేసి మీ ఇష్ట భాషను ఎంచుకోండి:",
+      ta: "உங்களுக்கு விருப்பமான மொழியைத் தேர்ந்தெடுக்கவும்:",
+      mr: "कृपया तुमची पसंतीची भाषा निवडा:",
+      kn: "ದಯವಿಟ್ಟು ನಿಮ್ಮ ಆದ್ಯತೆಯ ಭಾಷೆಯನ್ನು ಆಯ್ಕೆಮಾಡಿ:",
+    },
+    category_admission: {
+      en: "Admission Process & Eligibility",
+      hi: "प्रवेश प्रक्रिया और पात्रता",
+      te: "ప్రవేశ ప్రక్రియ & అర్హత",
+      ta: "சேர்க்கை செயல்முறை & தகுதி",
+      mr: "प्रवेश प्रक्रिया आणि पात्रता",
+      kn: "ಪ್ರವೇಶ ಪ್ರಕ್ರಿಯೆ ಮತ್ತು ಅರ್ಹತೆ",
+    },
+    category_cutoff: {
+      en: "Branch-wise Cutoff Ranks",
+      hi: "शाखा-वार कटऑफ रैंक",
+      te: "బ్రాంచ్-వారీ కటాఫ్ ర్యాంక్‌లు",
+      ta: "கிளை வாரியான கட்ஆஃப் தரவரிசை",
+      mr: "शाखा-निहाय कटऑफ रॅंक",
+      kn: "ಶಾಖೆಯ ಪ್ರಕಾರ ಕಟ್‌ಆಫ್ ಶ್ರೇಣಿಗಳು",
+    },
+    category_documents: {
+      en: "Required Documents",
+      hi: "आवश्यक दस्तावेज",
+      te: "అవసరమైన పత్రాలు",
+      ta: "தேவையான ஆவணங்கள்",
+      mr: "आवश्यक कागदपत्रे",
+      kn: "ಅಗತ್ಯ ದಾಖಲೆಗಳು",
+    },
+    category_fees: {
+      en: "Fee Structure & Scholarships",
+      hi: "शुल्क संरचना और छात्रवृत्ति",
+      te: "ఫీజు నిర్మాణం & స్కాలర్‌షిప్‌లు",
+      ta: "கட்டணம் & உதவித்தொகை",
+      mr: "फी रचना आणि शिष्यवृत्ती",
+      kn: "ಶುಲ್ಕ ರಚನೆ ಮತ್ತು ವಿದ್ಯಾರ್ಥಿವೇತನ",
+    },
+    category_others: {
+      en: "Others",
+      hi: "अन्य",
+      te: "ఇతరములు",
+      ta: "மற்றவை",
+      mr: "इतर",
+      kn: "ಇತರೆ",
+    },
+    input_placeholder: {
+      en: "Ask about admissions...",
+      hi: "प्रवेश के बारे में पूछें...",
+      te: "ప్రవేశాల గురించి అడగండి...",
+      ta: "சேர்க்கை பற்றி கேளுங்கள்...",
+      mr: "प्रवेशाबद्दल विचारा...",
+      kn: "ಪ್ರವೇಶದ ಬಗ್ಗೆ ಕೇಳಿ...",
+    },
+    error_connection: {
+      en: "Sorry, I'm having trouble connecting right now. Please try again in a moment.",
+      hi: "क्षमा करें, मुझे अभी कनेक्ट करने में समस्या हो रही है। कृपया कुछ देर बाद पुनः प्रयास करें।",
+      te: "క్షమించండి, నాకు ఇప్పుడు కనెక్ట్ చేయడంలో సమస్య ఉంది. దయచేసి కొద్దిసేపటి తర్వాత మళ్లీ ప్రయత్నించండి।",
+      ta: "மன்னிக்கவும், இப்போது இணைப்பதில் சிக்கல் உள்ளது. சிறிது நேரம் கழித்து மீண்டும் முயற்சிக்கவும்.",
+      mr: "क्षमस्व, मला आत्ता कनेक्ट होण्यात समस्या येत आहे. कृपया काही वेळाने पुन्हा प्रयत्न करा.",
+      kn: "ಕ್ಷಮಿಸಿ, ನನಗೆ ಈಗ ಸಂಪರ್ಕ ಸಾಧಿಸುವಲ್ಲಿ ತೊಂದರೆ ಇದೆ. ದಯವಿಟ್ಟು ಸ್ವಲ್ಪ ಸಮಯದ ನಂತರ ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+    },
+    rate_limit: {
+      en: "You're sending messages too quickly. Please wait a moment and try again.",
+      hi: "आप बहुत जल्दी संदेश भेज रहे हैं। कृपया प्रतीक्षा करें और पुनः प्रयास करें।",
+      te: "మీరు చాలా త్వరగా సందేశాలు పంపుతున్నారు. దయచేసి కాసేపు వేచి ఉండి మళ్లీ ప్రయత్నించండి।",
+      ta: "நீங்கள் மிக விரைவாக செய்திகளை அனுப்புகிறீர்கள். சிறிது நேரம் காத்திருந்து மீண்டும் முயற்சிக்கவும்.",
+      mr: "तुम्ही खूप वेगाने संदेश पाठवत आहात. कृपया थांबा आणि पुन्हा प्रयत्न करा.",
+      kn: "ನೀವು ತುಂಬಾ ವೇಗವಾಗಿ ಸಂದೇಶಗಳನ್ನು ಕಳುಹಿಸುತ್ತಿದ್ದೀರಿ. ದಯವಿಟ್ಟು ಕಾಯಿರಿ ಮತ್ತು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+    },
+    change_language: {
+      en: "🌐 Change Language",
+      hi: "🌐 भाषा बदलें",
+      te: "🌐 భాష మార్చండి",
+      ta: "🌐 மொழியை மாற்றவும்",
+      mr: "🌐 भाषा बदला",
+      kn: "🌐 ಭಾಷೆಯನ್ನು ಬದಲಿಸಿ",
+    },
+  };
+
+  function t(key) {
+    return TRANSLATIONS[key]?.[currentLanguage] || TRANSLATIONS[key]?.en || key;
+  }
+
+  function setLanguage(lang) {
+    console.log("Setting language to:", lang);
+    if (SUPPORTED_LANGUAGES[lang]) {
+      currentLanguage = lang;
+      sessionStorage.setItem("chatbot_language", lang);
+      sessionStorage.setItem("chatbot_language_selected", "true");
+      languageSelected = true;
+      
+      // Update input placeholder
+      if (inputEl) {
+        inputEl.placeholder = t("input_placeholder");
+      }
+      
+      console.log("Language set successfully:", lang);
+    } else {
+      console.error("Unsupported language:", lang);
+    }
+  }
+  
   // Chat history is preserved in this session for context-aware responses
   // The backend automatically uses conversation history for better answers
 
@@ -114,7 +261,16 @@
   }
 
   // ── Category definitions with follow-up questions ──────────
-  const CATEGORIES = {
+  // Category names will be translated dynamically
+  const CATEGORY_KEYS = {
+    "admission": "category_admission",
+    "cutoff": "category_cutoff",
+    "documents": "category_documents",
+    "fees": "category_fees",
+    "others": "category_others",
+  };
+  
+  const CATEGORIES_EN = {
     "Admission Process & Eligibility": [
       "What is the admission process?",
       "Am I eligible for admission?",
@@ -148,15 +304,121 @@
       "Talk to admission department",
     ],
   };
+  
+  function getTranslatedCategories() {
+    return [
+      t("category_admission"),
+      t("category_cutoff"),
+      t("category_documents"),
+      t("category_fees"),
+    ];
+  }
 
   function showWelcome() {
+    console.log("showWelcome called, languageSelected:", languageSelected);
+    
+    // Show language selector if not yet selected
+    if (!languageSelected) {
+      console.log("Showing language selector");
+      showLanguageSelector();
+      return;
+    }
+    
+    console.log("Showing welcome in language:", currentLanguage);
     addBotMessage(
-      `Hello! 👋 Welcome to the **${COLLEGE}** assistant.\n\n` +
-        "I can help you with the following topics. Please select one:"
+      t("welcome_title") + "\n\n" + t("welcome_select_topic")
     );
 
     // Show category buttons + Others
     addCategoryButtons();
+    
+    // Add language change button at the bottom
+    addLanguageChangeButton();
+  }
+
+  /** Show language selector on first interaction */
+  function showLanguageSelector() {
+    console.log("showLanguageSelector called");
+    addBotMessage(t("language_prompt"));
+    
+    const wrapper = document.createElement("div");
+    wrapper.className = "message bot";
+
+    const grid = document.createElement("div");
+    grid.className = "language-buttons";
+    grid.style.cssText = "display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; max-width: 300px;";
+
+    Object.entries(SUPPORTED_LANGUAGES).forEach(([code, info]) => {
+      const btn = document.createElement("button");
+      btn.className = "language-btn";
+      btn.style.cssText = (
+        "padding: 12px; border: 2px solid #e0e0e0; background: white; " +
+        "border-radius: 8px; cursor: pointer; transition: all 0.2s; " +
+        "font-size: 14px; display: flex; align-items: center; gap: 8px; " +
+        "justify-content: center;"
+      );
+      btn.innerHTML = `<span style="font-size: 20px;">${info.flag}</span><span style="font-weight: 500;">${info.native}</span>`;
+      
+      btn.addEventListener("mouseover", () => {
+        btn.style.borderColor = "#1976d2";
+        btn.style.backgroundColor = "#f0f7ff";
+      });
+      btn.addEventListener("mouseout", () => {
+        btn.style.borderColor = "#e0e0e0";
+        btn.style.backgroundColor = "white";
+      });
+      
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        console.log("Language selected:", code, info.native);
+        wrapper.remove();
+        setLanguage(code);
+        addUserMessage(info.native);
+        showWelcome();  // Show welcome in selected language
+      });
+      grid.appendChild(btn);
+    });
+
+    wrapper.appendChild(grid);
+    messagesEl.appendChild(wrapper);
+    scrollToBottom();
+    
+    console.log("Language selector displayed with", Object.keys(SUPPORTED_LANGUAGES).length, "languages");
+  }
+
+  /** Add language change button to allow users to switch language */
+  function addLanguageChangeButton() {
+    const wrapper = document.createElement("div");
+    wrapper.className = "message bot";
+    wrapper.style.marginTop = "10px";
+
+    const btn = document.createElement("button");
+    btn.className = "language-change-btn";
+    btn.textContent = t("change_language");
+    btn.style.cssText = (
+      "padding: 8px 16px; background: #f5f5f5; border: 1px solid #ddd; " +
+      "border-radius: 20px; cursor: pointer; font-size: 12px; " +
+      "color: #555; transition: all 0.2s;"
+    );
+    
+    btn.addEventListener("mouseover", () => {
+      btn.style.backgroundColor = "#e0e0e0";
+    });
+    btn.addEventListener("mouseout", () => {
+      btn.style.backgroundColor = "#f5f5f5";
+    });
+    
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      languageSelected = false;  // Reset language selection
+      sessionStorage.removeItem("chatbot_language_selected");
+      messagesEl.innerHTML = "";  // Clear messages
+      showWelcome();  // This will show language selector
+    });
+
+    wrapper.appendChild(btn);
+    messagesEl.appendChild(wrapper);
+    scrollToBottom();
   }
 
   /** Return to home screen while preserving chat history */
@@ -189,35 +451,41 @@
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>',
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 6v2m0 8v2"/></svg>',
     ];
-    // Only show the first 4 categories as grid buttons (not "Others")
-    const cats = Object.keys(CATEGORIES).filter(c => c !== "Others");
+    
+    const translatedCategories = getTranslatedCategories();
+    const categoriesEnKeys = Object.keys(CATEGORIES_EN).filter(c => c !== "Others");
 
-    cats.forEach((cat, i) => {
+    translatedCategories.forEach((cat, i) => {
       const btn = document.createElement("button");
       btn.className = "category-btn";
       btn.innerHTML = `<span class="cat-icon">${icons[i]}</span><span class="cat-label">${cat}</span>`;
+      
+      const enKey = categoriesEnKeys[i];  // Get corresponding English key
+      
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         wrapper.remove();
         addUserMessage(cat);
-        addBotMessage(`Here are some questions about **${cat}**. Pick one or type your own:`);
-        showInputArea();
-        addFollowUpButtons(CATEGORIES[cat], cat);
+        // Send the query in user's language to backend
+        sendMessage(cat);
       });
       grid.appendChild(btn);
     });
 
-    // "Others" button – shows follow-up options + open typing
+    // "Others" button
     const othersBtn = document.createElement("button");
     othersBtn.className = "category-btn others-btn";
-    othersBtn.innerHTML = `<span class="cat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></span><span class="cat-label">Others</span>`;
+    const othersText = t("category_others");
+    othersBtn.innerHTML = `<span class="cat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></span><span class="cat-label">${othersText}</span>`;
     othersBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       wrapper.remove();
-      addUserMessage("Others");
-      addBotMessage("Here are some common topics, or feel free to type your own question:");
+      addUserMessage(othersText);
       showInputArea();
-      addFollowUpButtons(CATEGORIES["Others"], "Others");
+      // For Others, just show the input
+      if (currentLanguage !== "en") {
+        addBotMessage("Please type your question:");  // Will be translated by backend
+      }
     });
     grid.appendChild(othersBtn);
 
@@ -228,38 +496,9 @@
 
   /** Render follow-up question buttons for a category */
   function addFollowUpButtons(questions, category) {
-    const wrapper = document.createElement("div");
-    wrapper.className = "message bot";
-
-    const qr = document.createElement("div");
-    qr.className = "followup-buttons";
-
-    questions.forEach((q) => {
-      const btn = document.createElement("button");
-      btn.textContent = q;
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        wrapper.remove();
-        sendMessage(q);
-      });
-      qr.appendChild(btn);
-    });
-
-    // "Type my own" option
-    const customBtn = document.createElement("button");
-    customBtn.className = "custom-btn";
-    customBtn.textContent = "✏️ Type my own question";
-    customBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      wrapper.remove();
-      addBotMessage(`Sure, type your question about **${category}** below:`);
-      inputEl.focus();
-    });
-    qr.appendChild(customBtn);
-
-    wrapper.appendChild(qr);
-    messagesEl.appendChild(wrapper);
-    scrollToBottom();
+    // Simplified - just show input for multilingual support
+    // Backend will handle the conversation in user's language
+    showInputArea();
   }
 
   function addMessage(text, sender) {
@@ -436,14 +675,13 @@
         body: JSON.stringify({
           message: userText,
           session_id: sessionId,
+          language: currentLanguage,
         }),
       });
 
       if (response.status === 429) {
         hideTyping();
-        addBotMessage(
-          "You're sending messages too quickly. Please wait a moment and try again."
-        );
+        addBotMessage(t("rate_limit"));
         return;
       }
 
@@ -456,6 +694,11 @@
 
       sessionId = data.session_id || sessionId;
       sessionStorage.setItem("chatbot_session", sessionId);
+      
+      // Update language if backend changed it
+      if (data.language && data.language !== currentLanguage) {
+        setLanguage(data.language);
+      }
 
       addBotMessage(data.reply);
 
@@ -477,9 +720,7 @@
     } catch (err) {
       hideTyping();
       console.error("Chat error:", err);
-      addBotMessage(
-        "Sorry, I'm having trouble connecting right now. Please try again in a moment."
-      );
+      addBotMessage(t("error_connection"));
     } finally {
       isSending = false;
       inputEl.disabled = false;

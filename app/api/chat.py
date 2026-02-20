@@ -97,6 +97,22 @@ except Exception as e:
     traceback.print_exc()
     raise
 
+try:
+    from app.utils.languages import (
+        detect_language,
+        detect_language_change_request,
+        get_translation,
+        get_language_instruction,
+        get_language_selector_message,
+        SUPPORTED_LANGUAGES,
+        DEFAULT_LANGUAGE,
+    )
+    logger.info("chat.py: languages OK")
+except Exception as e:
+    logger.error(f"chat.py: FAILED languages: {e}")
+    traceback.print_exc()
+    raise
+
 logger.info("chat.py: all imports succeeded")
 
 settings = get_settings()
@@ -109,6 +125,7 @@ _rate_buckets: dict[str, list[float]] = defaultdict(list)
 MAX_HISTORY = 10
 _session_history: dict[str, list[dict]] = defaultdict(list)
 _session_pending_intent: dict[str, str] = {}  # tracks if we asked for cutoff details
+_session_language: dict[str, str] = {}  # stores language preference per session
 
 # ── Cutoff collection state (per-session) ─────────────────
 # Stores partially collected cutoff fields as user answers one by one.
@@ -388,6 +405,7 @@ def _build_multi_branch_reply(
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=1000)
     session_id: str | None = None
+    language: str | None = None  # User's preferred language code (e.g., 'en', 'hi', 'te')
 
 
 class ChatResponse(BaseModel):
@@ -395,6 +413,7 @@ class ChatResponse(BaseModel):
     intent: str
     session_id: str
     sources: list[str] = []
+    language: str = DEFAULT_LANGUAGE  # Current language for this session
 
 
 # ── LLM caller ────────────────────────────────────────────────
@@ -435,17 +454,24 @@ def _generate_llm_response(
     cutoff_info: str = "",
     history: list[dict] | None = None,
     session_id: str = "unknown",
+    language: str = DEFAULT_LANGUAGE,
 ) -> str:
     """
-    Call OpenAI with smart token management.
+    Call OpenAI with smart token management and multilingual support.
     
     Features:
     - Token counting and monitoring
     - Smart history trimming with summarization
     - Automatic context truncation on overflow
     - Warning logs when approaching limits
+    - Multilingual response generation
     """
     system = _get_system_prompt()
+    
+    # Add language instruction to system prompt
+    lang_instruction = get_language_instruction(language)
+    system_with_lang = f"{system}\n\n**IMPORTANT: {lang_instruction}**"
+    
     client = _get_openai()
 
     user_content_parts = [f"User question: {user_message}"]
@@ -470,7 +496,7 @@ def _generate_llm_response(
         try:
             trimmed_history = trim_history_smart(
                 history=history,
-                system_prompt=system,
+                system_prompt=system_with_lang,
                 user_message=user_content,
                 context=context,
                 cutoff_info=cutoff_info,
@@ -483,7 +509,7 @@ def _generate_llm_response(
             trimmed_history = history[-MAX_HISTORY:] if history else []
 
     # Build messages
-    messages: list[dict] = [{"role": "system", "content": system}]
+    messages: list[dict] = [{"role": "system", "content": system_with_lang}]
     messages.extend(trimmed_history)
     messages.append({"role": "user", "content": user_content})
 
@@ -515,7 +541,7 @@ def _generate_llm_response(
             
             # Emergency fallback: use only system prompt + current message
             minimal_messages = [
-                {"role": "system", "content": system},
+                {"role": "system", "content": system_with_lang},
                 {"role": "user", "content": user_message}  # No context
             ]
             
@@ -571,12 +597,56 @@ async def chat(req: ChatRequest, request: Request):
     client_ip = request.client.host if request.client else "unknown"
     _check_rate_limit(client_ip)
 
-    # Sanitise
+     # Sanitise
     user_msg = sanitise_input(req.message)
     session_id = req.session_id or str(uuid.uuid4())
 
     if not user_msg:
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+    # ── Language detection and management ──────────────────────
+    # Get current language for this session (default to English if not set)
+    current_language = _session_language.get(session_id, DEFAULT_LANGUAGE)
+    
+    # Update language from request if provided
+    if req.language and req.language in SUPPORTED_LANGUAGES:
+        current_language = req.language
+        _session_language[session_id] = current_language
+    
+    # Check if user is requesting language change
+    lang_change_request = detect_language_change_request(user_msg, current_language)
+    if lang_change_request:
+        if lang_change_request == "show_selector":
+            # Show language selector
+            reply = get_language_selector_message(current_language)
+            _session_history[session_id].append({"role": "user", "content": user_msg})
+            _session_history[session_id].append({"role": "assistant", "content": reply})
+            return ChatResponse(
+                reply=reply,
+                intent="language_selection",
+                session_id=session_id,
+                language=current_language,
+            )
+        else:
+            # Change to specific language
+            current_language = lang_change_request
+            _session_language[session_id] = current_language
+            reply = get_translation("language_changed", current_language)
+            _session_history[session_id].append({"role": "user", "content": user_msg})
+            _session_history[session_id].append({"role": "assistant", "content": reply})
+            return ChatResponse(
+                reply=reply,
+                intent="language_changed",
+                session_id=session_id,
+                language=current_language,
+            )
+    
+    # Auto-detect language from message if not explicitly set
+    if session_id not in _session_language:
+        detected_lang = detect_language(user_msg)
+        current_language = detected_lang
+        _session_language[session_id] = detected_lang
+        logger.info(f"Auto-detected language for session {session_id}: {detected_lang}")
 
     # ── Check if pending web search permission ────────────────
     if session_id in _session_pending_websearch:
@@ -610,7 +680,8 @@ async def chat(req: ChatRequest, request: Request):
                     web_content[:4000],  # Limit content to 4000 chars
                     "",  # No cutoff info
                     history=history,
-                    session_id=session_id
+                    session_id=session_id,
+                    language=current_language
                 )
                 
                 _session_history[session_id].append({"role": "user", "content": original_query})
@@ -621,6 +692,7 @@ async def chat(req: ChatRequest, request: Request):
                     intent="informational",
                     session_id=session_id,
                     sources=[f"VNRVJIET Website ({url_to_fetch})"],
+                    language=current_language,
                 )
                 
             except Exception as e:
@@ -633,7 +705,7 @@ async def chat(req: ChatRequest, request: Request):
                 )
                 _session_history[session_id].append({"role": "user", "content": user_msg})
                 _session_history[session_id].append({"role": "assistant", "content": reply})
-                return ChatResponse(reply=reply, intent="informational", session_id=session_id)
+                return ChatResponse(reply=reply, intent="informational", session_id=session_id, language=current_language)
         
         elif _is_no_response(user_msg):
             # User declined web search
@@ -646,14 +718,14 @@ async def chat(req: ChatRequest, request: Request):
             )
             _session_history[session_id].append({"role": "user", "content": user_msg})
             _session_history[session_id].append({"role": "assistant", "content": reply})
-            return ChatResponse(reply=reply, intent="informational", session_id=session_id)
+            return ChatResponse(reply=reply, intent="informational", session_id=session_id, language=current_language)
         
         else:
             # Unclear response - ask again
             reply = "I didn't quite understand. Would you like me to search our official website? Please reply **yes** or **no**."
             _session_history[session_id].append({"role": "user", "content": user_msg})
             _session_history[session_id].append({"role": "assistant", "content": reply})
-            return ChatResponse(reply=reply, intent="web_search_permission", session_id=session_id)
+            return ChatResponse(reply=reply, intent="web_search_permission", session_id=session_id, language=current_language)
 
     # ── Check if session is in contact collection mode ────────
     if session_id in _session_contact_data:
@@ -674,7 +746,7 @@ async def chat(req: ChatRequest, request: Request):
                     ask = "Please provide your **full name** (at least 2 characters)."
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
-                    return ChatResponse(reply=ask, intent="contact_request", session_id=session_id)
+                    return ChatResponse(reply=ask, intent="contact_request", session_id=session_id, language=current_language)
                 collected["name"] = name
             
             elif waiting_for == "email":
@@ -684,7 +756,7 @@ async def chat(req: ChatRequest, request: Request):
                     ask = "That doesn't look like a valid email address. Please enter your **email** (e.g., student@example.com)."
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
-                    return ChatResponse(reply=ask, intent="contact_request", session_id=session_id)
+                    return ChatResponse(reply=ask, intent="contact_request", session_id=session_id, language=current_language)
                 collected["email"] = email
             
             elif waiting_for == "phone":
@@ -694,7 +766,7 @@ async def chat(req: ChatRequest, request: Request):
                     ask = "Please provide a valid **10-digit phone number** (e.g., 9876543210)."
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
-                    return ChatResponse(reply=ask, intent="contact_request", session_id=session_id)
+                    return ChatResponse(reply=ask, intent="contact_request", session_id=session_id, language=current_language)
                 collected["phone"] = phone_match.group(1)
             
             elif waiting_for == "programme":
@@ -712,7 +784,7 @@ async def chat(req: ChatRequest, request: Request):
                     ask = "Please choose a programme:\n\n1️⃣ B.Tech\n2️⃣ M.Tech\n3️⃣ MCA\n\nReply with the number (1, 2, or 3)."
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
-                    return ChatResponse(reply=ask, intent="contact_request", session_id=session_id)
+                    return ChatResponse(reply=ask, intent="contact_request", session_id=session_id, language=current_language)
                 collected["programme"] = programme
             
             elif waiting_for == "query_type":
@@ -732,7 +804,7 @@ async def chat(req: ChatRequest, request: Request):
                     ask = "Please choose an option:\n\n1️⃣ Report fraud\n2️⃣ General inquiry\n3️⃣ Not satisfied with chatbot\n4️⃣ Other\n\nReply with the number (1-4)."
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
-                    return ChatResponse(reply=ask, intent="contact_request", session_id=session_id)
+                    return ChatResponse(reply=ask, intent="contact_request", session_id=session_id, language=current_language)
                 collected["query_type"] = query_type
             
             elif waiting_for == "message":
@@ -753,7 +825,7 @@ async def chat(req: ChatRequest, request: Request):
                         ask = question_template
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
-                    return ChatResponse(reply=ask, intent="contact_request", session_id=session_id)
+                    return ChatResponse(reply=ask, intent="contact_request", session_id=session_id, language=current_language)
             
             # All required fields collected! Ask for optional message
             if "message" not in collected:
@@ -761,7 +833,7 @@ async def chat(req: ChatRequest, request: Request):
                 ask = "Almost done! Would you like to add any **additional message** or details?\n\n(Or reply **skip** to submit now)"
                 _session_history[session_id].append({"role": "user", "content": user_msg})
                 _session_history[session_id].append({"role": "assistant", "content": ask})
-                return ChatResponse(reply=ask, intent="contact_request", session_id=session_id)
+                return ChatResponse(reply=ask, intent="contact_request", session_id=session_id, language=current_language)
             
             # Handle skip for message
             if collected.get("_waiting_for") == "message" and user_msg.lower().strip() == "skip":
@@ -810,7 +882,7 @@ async def chat(req: ChatRequest, request: Request):
                 
                 _session_history[session_id].append({"role": "user", "content": user_msg})
                 _session_history[session_id].append({"role": "assistant", "content": reply})
-                return ChatResponse(reply=reply, intent="contact_request", session_id=session_id)
+                return ChatResponse(reply=reply, intent="contact_request", session_id=session_id, language=current_language)
             
             except Exception as e:
                 logger.error(f"Failed to save contact request: {e}", exc_info=True)
@@ -823,7 +895,7 @@ async def chat(req: ChatRequest, request: Request):
                 del _session_contact_data[session_id]
                 _session_history[session_id].append({"role": "user", "content": user_msg})
                 _session_history[session_id].append({"role": "assistant", "content": reply})
-                return ChatResponse(reply=reply, intent="contact_request", session_id=session_id)
+                return ChatResponse(reply=reply, intent="contact_request", session_id=session_id, language=current_language)
 
     # ── Check if session is in cutoff collection mode ─────────
     if session_id in _session_cutoff_data:
@@ -877,6 +949,7 @@ async def chat(req: ChatRequest, request: Request):
                         return ChatResponse(
                             reply=reply, intent="eligibility", session_id=session_id,
                             sources=["VNRVJIET Cutoff Database"],
+                            language=current_language,
                         )
                     else:
                         # Still need to ask for rank
@@ -884,7 +957,7 @@ async def chat(req: ChatRequest, request: Request):
                         ask = "Great! What is your **EAPCET rank**?"
                         _session_history[session_id].append({"role": "user", "content": user_msg})
                         _session_history[session_id].append({"role": "assistant", "content": ask})
-                        return ChatResponse(reply=ask, intent="cutoff", session_id=session_id)
+                        return ChatResponse(reply=ask, intent="cutoff", session_id=session_id, language=current_language)
                 else:
                     # User wants different details - start fresh
                     show_trend_flag = collected.get("_show_trend", False)  # Preserve trend flag
@@ -899,7 +972,7 @@ async def chat(req: ChatRequest, request: Request):
                     ask = f"Sure! Let me help you check your eligibility.\n\nWhich **branch(es)** are you interested in? You can pick one, multiple (e.g. CSE, ECE, IT), or say **all**.\n\n{branch_list}"
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
-                    return ChatResponse(reply=ask, intent="cutoff", session_id=session_id)
+                    return ChatResponse(reply=ask, intent="cutoff", session_id=session_id, language=current_language)
             
             # Try to extract what we asked for from the user's reply
             if waiting_for == "branch":
@@ -952,6 +1025,7 @@ async def chat(req: ChatRequest, request: Request):
                     return ChatResponse(
                         reply=reply, intent="cutoff", session_id=session_id,
                         sources=["VNRVJIET Cutoff Database"],
+                        language=current_language,
                     )
 
                 val = extract_rank(user_msg)
@@ -965,7 +1039,7 @@ async def chat(req: ChatRequest, request: Request):
                         ask = "I couldn't understand that. Please enter your **EAPCET rank** as a number (e.g., 5000).\n\nOr reply **no** if you just want to see cutoff ranks."
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
-                    return ChatResponse(reply=ask, intent="cutoff", session_id=session_id)
+                    return ChatResponse(reply=ask, intent="cutoff", session_id=session_id, language=current_language)
 
             # Check what's still missing and ask the next question
             for field, question_template in questions:
@@ -979,7 +1053,7 @@ async def chat(req: ChatRequest, request: Request):
                         ask = question_template
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
-                    return ChatResponse(reply=ask, intent="cutoff", session_id=session_id)
+                    return ChatResponse(reply=ask, intent="cutoff", session_id=session_id, language=current_language)
 
             # All fields collected!
             branches_list = collected["branch"]
@@ -1013,6 +1087,7 @@ async def chat(req: ChatRequest, request: Request):
             return ChatResponse(
                 reply=reply, intent="cutoff", session_id=session_id,
                 sources=["VNRVJIET Cutoff Database"],
+                language=current_language,
             )
 
     # ── Check for contact request keywords ───────────────────
@@ -1032,7 +1107,7 @@ async def chat(req: ChatRequest, request: Request):
         ask = _CONTACT_QUESTIONS[0][1]  # First question (name)
         _session_history[session_id].append({"role": "user", "content": user_msg})
         _session_history[session_id].append({"role": "assistant", "content": ask})
-        return ChatResponse(reply=ask, intent="contact_request", session_id=session_id)
+        return ChatResponse(reply=ask, intent="contact_request", session_id=session_id, language=current_language)
 
     # Classify
     classification = classify(user_msg)
@@ -1054,6 +1129,7 @@ async def chat(req: ChatRequest, request: Request):
             reply=_GREETING_REPLY,
             intent=intent.value,
             session_id=session_id,
+            language=current_language,
         )
 
     # ── Out of scope ──────────────────────────────────────
@@ -1064,6 +1140,7 @@ async def chat(req: ChatRequest, request: Request):
             reply=_OUT_OF_SCOPE_REPLY,
             intent=intent.value,
             session_id=session_id,
+            language=current_language,
         )
 
     # ── Check for follow-up trend request ─────────────────────
@@ -1088,6 +1165,7 @@ async def chat(req: ChatRequest, request: Request):
             intent="cutoff",
             session_id=session_id,
             sources=["VNRVJIET Cutoff Database"],
+            language=current_language,
         )
 
     # ── Extract structured entities ───────────────────────────
@@ -1167,7 +1245,7 @@ async def chat(req: ChatRequest, request: Request):
                 )
                 _session_history[session_id].append({"role": "user", "content": user_msg})
                 _session_history[session_id].append({"role": "assistant", "content": ask})
-                return ChatResponse(reply=ask, intent=intent.value, session_id=session_id)
+                return ChatResponse(reply=ask, intent=intent.value, session_id=session_id, language=current_language)
             
             # Start step-by-step collection
             for field, question_template in questions:
@@ -1185,7 +1263,7 @@ async def chat(req: ChatRequest, request: Request):
 
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
-                    return ChatResponse(reply=ask, intent=intent.value, session_id=session_id)
+                    return ChatResponse(reply=ask, intent=intent.value, session_id=session_id, language=current_language)
 
     # ── RAG path ──────────────────────────────────────────────
     if intent in (IntentType.INFORMATIONAL, IntentType.MIXED):
@@ -1211,7 +1289,8 @@ async def chat(req: ChatRequest, request: Request):
         rag_context, 
         cutoff_info, 
         history=history,
-        session_id=session_id
+        session_id=session_id,
+        language=current_language
     )
     
     # ── Web search fallback (only if LLM explicitly doesn't know) ──
@@ -1261,6 +1340,7 @@ async def chat(req: ChatRequest, request: Request):
             reply=reply,
             intent="web_search_permission",
             session_id=session_id,
+            language=current_language,
         )
 
     # Clear pending intent since we got a full answer
@@ -1279,6 +1359,7 @@ async def chat(req: ChatRequest, request: Request):
         intent=intent.value,
         session_id=session_id,
         sources=list(set(sources)),
+        language=current_language,
     )
 
 
@@ -1305,6 +1386,7 @@ async def clear_session(req: ChatRequest):
     - Cutoff collection state
     - Contact request state
     - Last cutoff query cache
+    - Language preference
     """
     session_id = req.session_id
     
@@ -1337,6 +1419,10 @@ async def clear_session(req: ChatRequest):
     if session_id in _session_pending_websearch:
         del _session_pending_websearch[session_id]
         cleared.append("pending_websearch")
+    
+    if session_id in _session_language:
+        del _session_language[session_id]
+        cleared.append("language")
     
     logger.info(f"Cleared session {session_id}: {', '.join(cleared) if cleared else 'no data found'}")
     
