@@ -104,6 +104,8 @@ try:
         get_translation,
         get_language_instruction,
         get_language_selector_message,
+        get_greeting_message,
+        get_out_of_scope_message,
         SUPPORTED_LANGUAGES,
         DEFAULT_LANGUAGE,
     )
@@ -608,12 +610,25 @@ async def chat(req: ChatRequest, request: Request):
     # Get current language for this session (default to English if not set)
     current_language = _session_language.get(session_id, DEFAULT_LANGUAGE)
     
-    # Update language from request if provided
+    # Update language from request if provided (explicit language selection from UI)
     if req.language and req.language in SUPPORTED_LANGUAGES:
         current_language = req.language
         _session_language[session_id] = current_language
+    else:
+        # Dynamic language detection - always detect from user input
+        detected_lang = detect_language(user_msg)
+        
+        # If detected language differs from current language, automatically switch
+        # This enables seamless language adaptation during conversation
+        if detected_lang != current_language:
+            logger.info(
+                f"Language change detected for session {session_id}: "
+                f"{current_language} -> {detected_lang}"
+            )
+            current_language = detected_lang
+            _session_language[session_id] = detected_lang
     
-    # Check if user is requesting language change
+    # Check if user is requesting language change (e.g., "switch to Hindi")
     lang_change_request = detect_language_change_request(user_msg, current_language)
     if lang_change_request:
         if lang_change_request == "show_selector":
@@ -640,13 +655,6 @@ async def chat(req: ChatRequest, request: Request):
                 session_id=session_id,
                 language=current_language,
             )
-    
-    # Auto-detect language from message if not explicitly set
-    if session_id not in _session_language:
-        detected_lang = detect_language(user_msg)
-        current_language = detected_lang
-        _session_language[session_id] = detected_lang
-        logger.info(f"Auto-detected language for session {session_id}: {detected_lang}")
 
     # ── Check if pending web search permission ────────────────
     if session_id in _session_pending_websearch:
@@ -1123,10 +1131,11 @@ async def chat(req: ChatRequest, request: Request):
 
     # ── Greeting ──────────────────────────────────────────────
     if intent == IntentType.GREETING:
+        greeting = get_greeting_message(current_language)
         _session_history[session_id].append({"role": "user", "content": user_msg})
-        _session_history[session_id].append({"role": "assistant", "content": _GREETING_REPLY})
+        _session_history[session_id].append({"role": "assistant", "content": greeting})
         return ChatResponse(
-            reply=_GREETING_REPLY,
+            reply=greeting,
             intent=intent.value,
             session_id=session_id,
             language=current_language,
@@ -1134,10 +1143,11 @@ async def chat(req: ChatRequest, request: Request):
 
     # ── Out of scope ──────────────────────────────────────
     if intent == IntentType.OUT_OF_SCOPE:
+        out_of_scope_msg = get_out_of_scope_message(current_language)
         _session_history[session_id].append({"role": "user", "content": user_msg})
-        _session_history[session_id].append({"role": "assistant", "content": _OUT_OF_SCOPE_REPLY})
+        _session_history[session_id].append({"role": "assistant", "content": out_of_scope_msg})
         return ChatResponse(
-            reply=_OUT_OF_SCOPE_REPLY,
+            reply=out_of_scope_msg,
             intent=intent.value,
             session_id=session_id,
             language=current_language,

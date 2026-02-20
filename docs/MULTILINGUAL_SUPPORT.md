@@ -24,19 +24,38 @@ The VNRVJIET Admissions Chatbot now supports **multiple languages**, allowing us
 - Users can choose their preferred language from the available options
 - The language preference is saved in the browser's session storage
 
-### 2. Automatic Language Detection
-- If a user types a message in a specific language, the system auto-detects it
-- The chatbot automatically switches to respond in the detected language
-- Detection works for all supported languages using character ranges and common keywords
+### 2. **Real-Time Dynamic Language Detection** 🔥
+- **Automatic language switching**: The chatbot continuously monitors the language of user input
+- **Seamless adaptation**: If you start in English but switch to Hindi mid-conversation, the bot automatically detects and responds in Hindi
+- **No manual switching needed**: Simply type in your preferred language, and the bot adapts instantly
+- **Works throughout the conversation**: Language detection happens on every message, not just the first one
+- Detection uses:
+  - Unicode character range analysis (Devanagari, Telugu, Tamil, Kannada, Bengali, Gujarati scripts)
+  - Common keyword matching as fallback
+  - Real-time comparison with current session language
+
+**Example Flow:**
+```
+User selects: English
+User: "What are the admission requirements?"
+Bot: [Responds in English]
+
+User: "हिंदी में बताओ" (Tell me in Hindi)
+Bot: [Automatically detects Hindi, switches language, responds in Hindi]
+
+User: "ప్రవేశ ప్రక్రియ ఏమిటి?" (What is the admission process? - Telugu)
+Bot: [Automatically detects Telugu, switches language, responds in Telugu]
+```
 
 ### 3. Session-Based Language Preference
 - Language preference is maintained throughout the user's session
 - Each session ID is associated with a specific language preference
 - Language preference persists across page refreshes within the same browser session
+- **Updated dynamically** based on user's actual input language
 
-### 4. Dynamic Language Switching
-- Users can change language mid-conversation
-- Click the "🌐 Change Language" button to access the language selector again
+### 4. Manual Language Switching (Optional)
+- Users can explicitly change language using the "🌐 Change Language" button
+- Can type language change requests: "switch to Hindi", "change language", etc.
 - All subsequent responses will be in the newly selected language
 - Conversation history is preserved when switching languages
 
@@ -80,9 +99,28 @@ class ChatResponse(BaseModel):
 ```
 
 #### Language Detection & Switching
-- Automatically detects language from user input using character ranges
-- Supports explicit language change requests
-- Shows language selector when requested
+- **Real-time detection**: Every user message is analyzed for language using `detect_language()`
+- **Automatic switching**: If detected language differs from current session language, it automatically updates
+- **Explicit requests**: Also supports manual language change via keywords ("switch to Hindi", "change language")
+- **Session tracking**: `_session_language` dict maintains current language per session
+- **Logging**: All language changes are logged for debugging and analytics
+
+**Implementation (chat.py lines ~608-625):**
+```python
+# Dynamic language detection - always detect from user input
+detected_lang = detect_language(user_msg)
+
+# If detected language differs from current language, automatically switch
+if detected_lang != current_language:
+    logger.info(f"Language change detected: {current_language} -> {detected_lang}")
+    current_language = detected_lang
+    _session_language[session_id] = detected_lang
+```
+
+**Detection Priority:**
+1. **UI explicit selection** (highest priority) - When user clicks language button
+2. **Real-time auto-detection** - Analyzes every message for language change
+3. **Manual change requests** - Keywords like "switch to Hindi"
 
 #### LLM Response Generation
 - System prompt is enhanced with language-specific instructions
@@ -219,6 +257,52 @@ Bot: (auto-detects Tamil)
      1. EAPCET தேர்வு எழுதுங்கள்
      2. ஆன்லைன் விண்ணப்பம்...
 ```
+
+### Example 4: **Dynamic Language Adaptation** (NEW) 🔥
+
+**Scenario: User starts in English, then switches to Hindi naturally**
+
+```
+User: (selects English initially)
+Bot: Hello! 👋 Welcome to the VNRVJIET admissions assistant.
+
+User: What courses do you offer?
+Bot: We offer the following courses:
+     • B.Tech in CSE, ECE, EEE, Mechanical, Civil...
+
+User: हिंदी में बताओ (Tell me in Hindi)
+Bot: (🔍 Automatically detects Hindi from Unicode Devanagari characters)
+     नमस्ते! हम निम्नलिखित पाठ्यक्रम प्रदान करते हैं:
+     • B.Tech CSE, ECE, EEE, मैकेनिकल, सिविल...
+
+User: CSE के लिए फीस क्या है? (What is the fee for CSE?)
+Bot: (🔍 Continues in Hindi as detected from input)
+     कंप्यूटर साइंस इंजीनियरिंग (CSE) के लिए वार्षिक शुल्क...
+
+User: Tell me details in Telugu
+Bot: (🔍 Detects Telugu keyword)
+     తెలుగులో సమాధానం ఇవ్వండి। మీకు తెలుగులో సమాచారం కావాలా?
+```
+
+**Scenario: Multilingual conversation flow**
+
+```
+User: (selects English)
+Bot: [Responds in English]
+
+User: ప్రవేశ ప్రక్రియ ఏమిటి? (What is admission process? - Pure Telugu)
+Bot: (🔍 Detected \u0C00-\u0C7F Telugu script)
+     ప్రవేశ ప్రక్రియ గురించి వివరాలు:
+     1. EAPCET పరీక్ష రాయండి
+     2. ఆన్‌లైన్ దరఖాస్తు...
+
+User: hostel facilities?
+Bot: (🔍 Detected English - automatically switches back)
+     VNRVJIET offers excellent hostel facilities:
+     • Separate hostels for boys and girls...
+```
+
+**Note:** The system performs language detection **on every message**, ensuring seamless adaptation regardless of initial language selection.
 
 ## API Reference
 
