@@ -27,6 +27,8 @@ def extract_rank(text: str) -> int | None:
     Try to extract a numeric rank from the user query.
     Valid EAPCET rank range: 1 to 200000.
     Handles "21000", "21k", "rank 21000", etc.
+    
+    IMPORTANT: Excludes 4-digit years (2020-2030) to avoid confusion.
     """
     # "21k" → 21000
     k_match = re.search(r"(\d+)\s*k\b", text, re.I)
@@ -36,10 +38,14 @@ def extract_rank(text: str) -> int | None:
             return val
         return None
 
-    # Plain number like "2022" or "15000"
+    # Plain number like "15000" or "42000"
+    # But NOT years like "2022", "2023", "2024", "2025" etc.
     num_match = re.search(r"\b(\d+)\b", text)
     if num_match:
         val = int(num_match.group(1))
+        # Exclude 4-digit years (2020-2030 range) - these are years, not ranks!
+        if 2020 <= val <= 2030:
+            return None
         if 1 <= val <= 200000:
             return val
         return None

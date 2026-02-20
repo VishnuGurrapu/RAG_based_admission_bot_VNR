@@ -20,6 +20,37 @@ If anyone claims they can get you a seat, please report the fraud immediately:
 
 ---
 
+## 🆕 What's New (Latest Updates)
+
+### v2.0 - Multilingual & Enhanced Intelligence (Feb 2026)
+
+**🌍 Universal Language Support**
+- Speak in **any language** - Hindi, Telugu, Tamil, Marathi, Kannada, or any other
+- Automatic language detection and response in the same language
+- Smart query translation for knowledge base retrieval
+- Hybrid classification: keyword-based for English, LLM-based for others
+
+**💬 Conversation Memory & Context**
+- Remembers conversation history (up to 20 messages per session)
+- Handles follow-up questions: "What about BC-A?" after asking about OC
+- Meta-questions support: "What was my first question?", "Summarize our chat"
+- New debug endpoints: `/api/session/{id}/history`, `/api/sessions`
+
+**🎯 Enhanced RAG & Intelligence**
+- **Better Retrieval**: Increased top_k from 5 to 10, lowered threshold to 0.25
+- **Institutional Assistant**: Now handles ALL college topics (not just admissions)
+- **Smart Filtering**: Enhanced out-of-scope detection with false positive prevention
+- **Cross-Category Reasoning**: Connects training → placements, cutoffs → eligibility
+- **Token Management**: Expanded response limit to 800 tokens for comprehensive answers
+- **Fixed Word Boundaries**: "submit" no longer triggers MIT false match, "nri" ≠ NIT
+
+**📊 Better UX**
+- More comprehensive answers with cross-topic insights
+- Reduced false refusals (e.g., "NRI documents" now works correctly)
+- Improved classification accuracy for complex queries
+
+---
+
 ## Architecture
 
 ```
@@ -29,21 +60,45 @@ Floating Chat Button (iframe)
    ↓
 FastAPI Backend
    ↓
-Query Classifier (rule-based)
+Session Manager (conversation memory)
    ↓
- ┌───────────────────┬────────────────────┐
- │ Cutoff Engine      │  RAG Retrieval     │
- │ (Firestore – exact)│  (Pinecone + OpenAI)│
- └───────────────────┴────────────────────┘
+Language Detector (multilingual support)
+   ↓
+Query Classifier (hybrid: keyword + LLM-based)
+   ↓
+ ┌───────────────────┬────────────────────────────┐
+ │ Cutoff Engine     │  RAG Retrieval             │
+ │ (Firestore–exact) │  (Pinecone + Translation)  │
+ └───────────────────┴────────────────────────────┘
         ↓
    Controlled LLM (GPT-4o-mini)
+        ↓
+   Response in User's Language
 ```
 
 ## Features
 
+### 🌍 Multilingual Support (NEW)
+- **Universal Language Support**: Responds in Hindi, Telugu, Tamil, Marathi, Kannada, and any other language
+- **Smart Language Detection**: Automatically detects query language and responds in the same language
+- **Hybrid Classification**: Keyword-based for English, LLM-based for other languages
+- **Translation for Retrieval**: Translates non-English queries for effective knowledge base search
+- **Natural Conversations**: Users can ask "CSE की cutoff क्या है?" and get responses in Hindi
+
+### 💬 Conversation Memory & Context (NEW)
+- **Session-Based Memory**: Remembers conversation history across messages
+- **Context-Aware Responses**: Handles follow-up questions and contextual references
+- **Meta-Question Support**: Can answer "What was my first question?" or "Summarize our conversation"
+- **Extended History**: Maintains up to 20 messages (40 total turns) per session
+- **Debug Endpoints**: View conversation history for troubleshooting
+
+### 🎯 Core Features
 - **Hybrid pipeline**: Structured cutoff queries via Firestore; informational queries via Pinecone RAG
 - **4 Years Historical Data**: 1,271 EAPCET cutoff records spanning 2022-2025
 - **Smart Token Management**: Automatic context trimming, summarization, and overflow handling to prevent API errors
+- **Enhanced RAG Retrieval**: Top-k=10, score threshold=0.25 for comprehensive results
+- **Institutional Assistant**: Handles ALL college topics (admissions, placements, training, hostels, etc.)
+- **Smart Out-of-Scope Filtering**: Enhanced detection with false positive prevention
 - **Contact Request System**: Collects user info when they want to speak with admission department
 - **Admin Dashboard**: Easy-to-use interface for admission staff to view and manage contact requests
 - **Privacy Protection**: Phone numbers only shared for fraud reports, not for general queries
@@ -374,9 +429,11 @@ See `embed_snippet.html` for more options.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/chat` | Send a message, get a response |
+| POST | `/api/chat` | Send a message, get a response (supports all languages) |
 | GET | `/api/health` | Health check |
 | GET | `/api/branches` | List available branches |
+| GET | `/api/session/{session_id}/history` | View conversation history for a session (NEW) |
+| GET | `/api/sessions` | List all active sessions (NEW) |
 | GET | `/widget` | Chat widget HTML page |
 | GET | `/admin/contacts` | Admin dashboard for contact requests |
 | GET | `/admin/contacts/export` | Export contact requests to CSV |
@@ -384,6 +441,7 @@ See `embed_snippet.html` for more options.
 
 ### POST `/api/chat`
 
+**English Example:**
 ```json
 {
   "message": "What is the CSE cutoff for OC category?",
@@ -402,11 +460,156 @@ Response:
 }
 ```
 
+**Hindi Example:**
+```json
+{
+  "message": "CSE की cutoff क्या है OC category के लिए?",
+  "session_id": "s_abc12345"
+}
+```
+
+Response:
+
+```json
+{
+  "reply": "वर्ष 2025, राउंड 1 (कन्वीनर कोटा) में OC श्रेणी के तहत CSE के लिए अंतिम कटऑफ रैंक **3,500** थी।",
+  "intent": "cutoff",
+  "session_id": "s_abc12345",
+  "sources": ["VNRVJIET Cutoff Database"]
+}
+```
+
+### GET `/api/session/{session_id}/history` (NEW)
+
+View conversation history for debugging or analysis:
+
+```json
+{
+  "session_id": "s_abc12345",
+  "messages": [
+    {"role": "user", "content": "Hi"},
+    {"role": "assistant", "content": "Hello! How can I help you today?"},
+    {"role": "user", "content": "What is CSE cutoff?"},
+    {"role": "assistant", "content": "The CSE cutoff for..."}
+  ],
+  "total_messages": 4
+}
+```
+
 ## Running Tests
 
 ```bash
 pip install pytest httpx
 pytest tests/ -v
+```
+
+## Using Multilingual Features
+
+The chatbot now supports conversations in **any language** with automatic detection and translation.
+
+### How It Works
+
+1. **Language Detection**: Automatically detects if your query is in a non-English language
+2. **Query Translation**: Translates your query to English for effective knowledge base search
+3. **Context Retrieval**: Retrieves relevant information from the English knowledge base
+4. **Native Response**: Generates response in the **same language** you asked in
+
+### Supported Languages
+
+- **Hindi** (हिन्दी)
+- **Telugu** (తెలుగు)
+- **Tamil** (தமிழ்)
+- **Marathi** (मराठी)
+- **Kannada** (ಕನ್ನಡ)
+- **And any other language supported by GPT-4o-mini**
+
+### Example Conversations
+
+**Hindi:**
+```
+User: "कॉलेज में कितने ब्रांच हैं?"
+Bot: "हमारे कॉलेज में **14 इंजीनियरिंग ब्रांच** हैं..."
+
+User: "CSE की cutoff क्या है?"
+Bot: "वर्ष 2025 में OC श्रेणी के लिए CSE की अंतिम रैंक **3,500** थी..."
+```
+
+**Telugu:**
+```
+User: "ఈ కాలేజీలో ఎన్ని బ్రాంచ్‌లు ఉన్నాయి?"
+Bot: "మా కాలేజీలో **14 ఇంజినీరింగ్ బ్రాంచ్‌లు** ఉన్నాయి..."
+
+User: "హాస్టల్ సౌకర్యాలు ఏమిటి?"
+Bot: "మా కాలేజీకి **అమ్మాయిలు మరియు అబ్బాయిల హాస్టల్** సౌకర్యాలు ఉన్నాయి..."
+```
+
+**Tamil:**
+```
+User: "இந்த கல்லூரியில் எத்தனை பிரிவுகள் உள்ளன?"
+Bot: "எங்கள் கல்லூரியில் **14 பொறியியல் பிரிவுகள்** உள்ளன..."
+```
+
+### Mixed Language Support
+
+You can also mix languages in a single conversation:
+
+```
+User: "CSE branch के बारे में बताओ"
+Bot: "CSE (Computer Science Engineering) ब्रांच के बारे में..."
+
+User: "What about placements?"
+Bot: "Our placement statistics show that CSE students received..."
+```
+
+## Conversation Memory & Follow-up Questions
+
+The chatbot maintains conversation context and can handle follow-up questions.
+
+### Session-Based Memory
+
+Each conversation session stores up to **20 messages** (40 total turns including bot responses).
+
+### Example: Contextual Conversation
+
+```
+User: "What is the CSE cutoff for OC category?"
+Bot: "The CSE cutoff for OC Boys in 2025 was 3,500..."
+
+User: "What about BC-A?"
+Bot: "For BC-A category in CSE (2025), the cutoff was 8,500..."
+
+User: "And for girls?"
+Bot: "For BC-A Girls in CSE (2025), the cutoff was 9,200..."
+
+User: "What was my first question?"
+Bot: "Your first question was about the CSE cutoff for OC category."
+```
+
+### Meta-Questions Support
+
+The chatbot can recall and summarize conversation history:
+
+```
+User: "Summarize our conversation"
+Bot: "We discussed CSE cutoffs for different categories: 
+      OC Boys (3,500), BC-A Boys (8,500), BC-A Girls (9,200)"
+
+User: "How many questions did I ask?"
+Bot: "You've asked 4 questions so far in this conversation."
+```
+
+### Debug & Monitoring
+
+View conversation history for any session:
+
+```bash
+curl http://localhost:8000/api/session/s_abc12345/history
+```
+
+List all active sessions:
+
+```bash
+curl http://localhost:8000/api/sessions
 ```
 
 ## Environment Variables

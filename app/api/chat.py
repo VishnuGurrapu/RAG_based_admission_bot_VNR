@@ -354,6 +354,7 @@ def _build_multi_branch_reply(
     gender: str,
     rank: int | None = None,
     show_trend: bool = False,
+    year: int | None = None,
 ) -> str:
     """
     Query cutoff/eligibility for one or more branches and build
@@ -362,13 +363,14 @@ def _build_multi_branch_reply(
     Args:
         show_trend: If True, shows all years with trend analysis.
                     If False, shows only latest year.
+        year: Specific year to query (e.g., 2023, 2024). None for latest.
     """
     parts: list[str] = []
     for b in branches:
         if rank is not None:
-            result = check_eligibility(rank, b, category, year=None, gender=gender)
+            result = check_eligibility(rank, b, category, year=year, gender=gender)
         else:
-            result = get_cutoff(b, category, year=None, gender=gender, show_trend=show_trend)
+            result = get_cutoff(b, category, year=year, gender=gender, show_trend=show_trend)
         parts.append(result.message)
 
     if len(parts) == 1:
@@ -866,7 +868,8 @@ async def chat(req: ChatRequest, request: Request):
                             collected["category"], 
                             collected["gender"], 
                             extracted_rank,
-                            show_trend=show_trend
+                            show_trend=show_trend,
+                            year=collected.get("year")
                         )
                         
                         _session_history[session_id].append({"role": "user", "content": user_msg})
@@ -943,7 +946,7 @@ async def chat(req: ChatRequest, request: Request):
 
                     reply = "No worries! Here are the cutoff ranks for reference:\n\n"
                     show_trend = collected.get("_show_trend", False)
-                    reply += _build_multi_branch_reply(branches_list, category, gender, rank=None, show_trend=show_trend)
+                    reply += _build_multi_branch_reply(branches_list, category, gender, rank=None, show_trend=show_trend, year=collected.get("year"))
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": reply})
                     return ChatResponse(
@@ -991,6 +994,7 @@ async def chat(req: ChatRequest, request: Request):
                     "branch": branches_list,
                     "category": category,
                     "gender": gender,
+                    "year": collected.get("year"),
                 }
             
             del _session_cutoff_data[session_id]
@@ -1001,7 +1005,7 @@ async def chat(req: ChatRequest, request: Request):
             show_trend = collected.get("_show_trend", False)
 
             # Query each branch and combine results
-            reply = _build_multi_branch_reply(branches_list, category, gender, rank_val if has_rank else None, show_trend=show_trend)
+            reply = _build_multi_branch_reply(branches_list, category, gender, rank_val if has_rank else None, show_trend=show_trend, year=collected.get("year"))
 
             _session_history[session_id].append({"role": "user", "content": user_msg})
             _session_history[session_id].append({"role": "assistant", "content": reply})
@@ -1073,7 +1077,8 @@ async def chat(req: ChatRequest, request: Request):
             last["category"],
             last["gender"],
             rank=None,
-            show_trend=True
+            show_trend=True,
+            year=last.get("year")
         )
         
         _session_history[session_id].append({"role": "user", "content": user_msg})
@@ -1090,7 +1095,9 @@ async def chat(req: ChatRequest, request: Request):
     branch = extract_branch(user_msg)
     category = extract_category(user_msg)
     gender = extract_gender(user_msg)
-    year = extract_year(user_msg) if intent not in (IntentType.CUTOFF, IntentType.ELIGIBILITY, IntentType.MIXED) else None
+    # Extract year for ALL query types (including cutoff/eligibility)
+    # Users often ask "What was CSE cutoff in 2023?"
+    year = extract_year(user_msg)
 
     cutoff_info = ""
     sources: list[str] = []
@@ -1121,6 +1128,8 @@ async def chat(req: ChatRequest, request: Request):
             collected["category"] = category
         if gender:
             collected["gender"] = gender
+        if year:
+            collected["year"] = year
         if rank and is_eligibility:
             collected["rank"] = rank
 
@@ -1133,7 +1142,7 @@ async def chat(req: ChatRequest, request: Request):
             if isinstance(b_list, str):
                 b_list = [b_list]
             show_trend = collected.get("_show_trend", False)
-            cutoff_info = _build_multi_branch_reply(b_list, category, gender, rank if is_eligibility else None, show_trend=show_trend)
+            cutoff_info = _build_multi_branch_reply(b_list, category, gender, rank if is_eligibility else None, show_trend=show_trend, year=collected.get("year"))
             sources.append("VNRVJIET Cutoff Database")
         else:
             # Check if we can reuse recent cutoff data for eligibility query
