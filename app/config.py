@@ -115,6 +115,10 @@ class Settings:
         "ece": "https://vnrvjiet.ac.in/ece/",
         "eee": "https://vnrvjiet.ac.in/eee/",
         "eie": "https://vnrvjiet.ac.in/eie/",
+        "automobile": "https://vnrvjiet.ac.in/auto/",
+        "biotechnology": "https://vnrvjiet.ac.in/biotech/",
+        "chemistry": "https://vnrvjiet.ac.in/chemistry/",
+        "english": "https://vnrvjiet.ac.in/humanities-english/",
         "physics": "https://vnrvjiet.ac.in/physics/",
         "mathematics": "https://vnrvjiet.ac.in/mathematics-and-management-sciences/",
     }

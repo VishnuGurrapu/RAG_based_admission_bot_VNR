@@ -134,7 +134,15 @@ def extract_branches(text: str) -> list[str]:
 
 
 def extract_category(text: str) -> str | None:
-    """Attempt to extract a reservation category from user text."""
+    """Attempt to extract a reservation category from user text. Returns 'ALL' for all categories."""
+    t = text.strip().lower()
+    
+    # Check for "all categories" / "all castes" / "for all"
+    if re.search(r"\b(?:all|every|each)\s*(?:categor|caste|cat\b)", t):
+        return "ALL"
+    if re.search(r"\bfor\s*all\b", t):
+        return "ALL"
+    
     cat_patterns = {
         r"\boc\b|\bopen\s*category\b|\bgeneral\s*category\b|\bgeneral\b": "OC",
         r"\bobc\b|\bbc[\s-]?d\b": "BC-D",
@@ -156,8 +164,17 @@ def extract_category(text: str) -> str | None:
 
 
 def extract_gender(text: str) -> str | None:
-    """Extract gender from user text. Returns 'Boys' or 'Girls' or None."""
+    """Extract gender from user text. Returns 'Boys', 'Girls', 'ALL' (for both), or None."""
     t = text.lower()
+    
+    # Check for "both", "all genders", "boys and girls", "coed"
+    if re.search(r"\b(?:both|all)\s*(?:gender|sex|boy.*girl|girl.*boy)?", t):
+        return "ALL"
+    if re.search(r"\bboy.*and.*girl|girl.*and.*boy", t):
+        return "ALL"
+    if re.search(r"\bcoed\b", t):
+        return "ALL"
+    
     if re.search(r"\b(girl|girls|female|women|woman|daughter)\b", t):
         return "Girls"
     if re.search(r"\b(boy|boys|male|men|man|son)\b", t):

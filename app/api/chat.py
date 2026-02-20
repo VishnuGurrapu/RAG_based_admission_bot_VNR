@@ -52,6 +52,8 @@ try:
         check_eligibility,
         get_cutoff,
         get_all_cutoffs_for_branch,
+        get_cutoffs_flexible,
+        format_cutoffs_table,
         list_branches,
     )
     logger.info("chat.py: cutoff_engine OK")
@@ -309,6 +311,18 @@ def _detect_url_category(query: str) -> str:
         return "dept_eee"
     if any(kw in query_lower for kw in ["eie", "instrumentation"]):
         return "dept_eie"
+    if any(kw in query_lower for kw in ["automobile", "auto", "automotive"]):
+        return "dept_automobile"
+    if any(kw in query_lower for kw in ["biotechnology", "biotech", "bio tech"]):
+        return "dept_biotechnology"
+    if any(kw in query_lower for kw in ["chemistry", "chem"]):
+        return "dept_chemistry"
+    if any(kw in query_lower for kw in ["english", "humanities", "communication"]):
+        return "dept_english"
+    if any(kw in query_lower for kw in ["physics", "phy"]):
+        return "dept_physics"
+    if any(kw in query_lower for kw in ["mathematics", "math", "maths", "management"]):
+        return "dept_mathematics"
     
     # General departments/exams (when asking about all departments)
     if any(kw in query_lower for kw in ["all departments", "department list", "examination", "exam", "faculty", "hod"]):
@@ -379,11 +393,66 @@ def _build_multi_branch_reply(
     Query cutoff/eligibility for one or more branches and build
     a combined response.
     
+    Handles "ALL" values for category and gender to show comprehensive data.
+    
     Args:
-        show_trend: If True, shows all years with trend analysis.
-                    If False, shows only latest year.
-        year: Specific year to query (e.g., 2023, 2024). None for latest.
+        branches: List of branch codes or ["ALL"] for all branches
+        category: Category code or "ALL" for all categories
+        gender: "Boys", "Girls", or "ALL" for both genders
+        rank: Optional rank for eligibility check
+        show_trend: If True, shows all years with trend analysis
+        year: Specific year to query (e.g., 2023, 2024). None for latest
     """
+    # Handle "ALL" cases with flexible query (ALL branches, categories, or genders)
+    if branches == ["ALL"] or "ALL" in branches or category == "ALL" or gender == "ALL":
+        # Use flexible query function
+        logger.info(f"Using flexible cutoff query: branches={branches}, category={category}, gender={gender}")
+        
+        # Determine branches to query
+        query_branches = []
+        if branches == ["ALL"] or (isinstance(branches, list) and "ALL" in branches):
+            query_branches = [None]  # Query all branches
+        else:
+            query_branches = branches if isinstance(branches, list) else [branches]
+        
+        all_cutoffs = []
+        for branch in query_branches:
+            cutoffs = get_cutoffs_flexible(
+                branch=branch,
+                category=None if category == "ALL" else category,
+                gender=None if gender == "ALL" else gender,
+                year=year,
+                limit=200,
+            )
+            all_cutoffs.extend(cutoffs)
+        
+        if not all_cutoffs:
+            cat_str = "all categories" if category == "ALL" else category
+            gen_str = "both Boys and Girls" if gender == "ALL" else gender
+            branch_str = "all departments" if branches == ["ALL"] else ", ".join(branches)
+            return f"No cutoff data found for {branch_str} / {cat_str} / {gen_str}. The data may not be available yet."
+        
+        # Format the results
+        title_parts = []
+        if branches == ["ALL"]:
+            title_parts.append("All Departments")
+        else:
+            title_parts.append(", ".join(branches))
+        
+        if category == "ALL":
+            title_parts.append("All Categories")
+        else:
+            title_parts.append(category)
+        
+        if gender == "ALL":
+            title_parts.append("Boys & Girls")
+        else:
+            title_parts.append(gender)
+        
+        title = "Cutoff Ranks: " + " | ".join(title_parts)
+        return format_cutoffs_table(all_cutoffs, title=title, max_rows=50)
+    
+    # Original logic for specific category and gender
     parts: list[str] = []
     for b in branches:
         if rank is not None:
@@ -986,9 +1055,7 @@ async def chat(req: ChatRequest, request: Request):
             if waiting_for == "branch":
                 vals = extract_branches(user_msg)
                 if vals:
-                    # Resolve "ALL" to actual branch list from DB
-                    if vals == ["ALL"]:
-                        vals = list_branches()
+                    # Keep "ALL" as-is so _build_multi_branch_reply can use flexible query
                     collected["branch"] = vals
                 else:
                     # Try raw text as a single branch name
@@ -997,14 +1064,22 @@ async def chat(req: ChatRequest, request: Request):
             elif waiting_for == "category":
                 val = extract_category(user_msg)
                 if not val:
-                    val = user_msg.strip().upper()
+                    # Check if user said "all" in any form
+                    msg_lower = user_msg.strip().lower()
+                    if any(word in msg_lower for word in ["all", "every", "each", "any"]):
+                        val = "ALL"
+                    else:
+                        val = user_msg.strip().upper()
                 collected["category"] = val
 
             elif waiting_for == "gender":
                 val = extract_gender(user_msg)
                 if not val:
                     t = user_msg.strip().lower()
-                    if t in ("boy", "boys", "male", "m"):
+                    # Check for "all" or "both" responses
+                    if any(word in t for word in ["all", "both", "any", "either"]):
+                        val = "ALL"
+                    elif t in ("boy", "boys", "male", "m"):
                         val = "Boys"
                     elif t in ("girl", "girls", "female", "f"):
                         val = "Girls"
@@ -1209,8 +1284,7 @@ async def chat(req: ChatRequest, request: Request):
         # Extract multiple branches
         branches_extracted = extract_branches(user_msg)
         if branches_extracted:
-            if branches_extracted == ["ALL"]:
-                branches_extracted = list_branches()
+            # Keep "ALL" as-is so _build_multi_branch_reply can use flexible query
             collected["branch"] = branches_extracted
         if category:
             collected["category"] = category

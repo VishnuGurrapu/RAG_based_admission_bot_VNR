@@ -75,7 +75,7 @@ def _get_department_url(branch: str) -> str | None:
         # AI/ML/IoT specializations
         "CSE-CSM": "cse_aiml_iot",  # AI & ML
         "CSE-CSO": "cse_aiml_iot",  # IoT
-        "AUT": "cse_aiml_iot",      # Robotics & AI
+        "RAI": "cse_aiml_iot",      # Robotics & AI
         
         # Data Science/Cyber Security
         "CSE-CSD": "cse_ds_cys",  # Data Science
@@ -85,6 +85,8 @@ def _get_department_url(branch: str) -> str | None:
         # Other departments
         "IT": "it",
         "ME": "mech",
+        "AUT": "automobile",  # Automobile Engineering
+        "BIO": "biotechnology",  # Biotechnology
         "CIV": "civil",
         "ECE": "ece",
         "EEE": "eee",
@@ -242,6 +244,7 @@ def get_cutoff(
     ph_type : str  – PH disability code: "PHV","PHH","PHO","PHM","PHA" or None
     show_trend : bool – If True, show all years with trend analysis; if False, show only latest year
     """
+    logger.info(f"get_cutoff called: branch={branch}, category={category}, year={year}, gender={gender}, quota={quota}")
     branch = _normalise_branch(branch)
     category = _normalise_category(category)
 
@@ -271,6 +274,10 @@ def get_cutoff(
 
     docs = query.stream()
     rows = [doc.to_dict() for doc in docs]
+    
+    logger.info(f"Firestore query returned {len(rows)} rows for branch={branch}, category={category}, gender={gender}, year={year}")
+    if rows:
+        logger.info(f"Sample row: {rows[0]}")
 
     # Also check with 'caste' field for older EWS records that use that name
     if not rows or category == "EWS":
@@ -500,3 +507,174 @@ def get_all_cutoffs_for_branch(
         reverse=True,
     )
     return rows
+
+
+def get_cutoffs_flexible(
+    branch: str | None = None,
+    category: str | None = None,
+    gender: str | None = None,
+    year: int | None = None,
+    round_num: int | None = None,
+    quota: str = "Convenor",
+    limit: int = 100,
+) -> list[dict]:
+    """
+    Flexible cutoff query that allows filtering by any combination of parameters.
+    Use None or omit parameters to get all values for that dimension.
+    
+    Parameters
+    ----------
+    branch : str | None – Specific branch code or None for all branches
+    category : str | None – Specific category or None for all categories
+    gender : str | None – "Boys", "Girls", or None for all genders
+    year : int | None – Specific year or None for latest/all years
+    round_num : int | None – Specific round or None for all rounds
+    quota : str – "Convenor", "SPORTS", etc.
+    limit : int – Maximum number of results to return
+    
+    Returns
+    -------
+    list[dict] : List of cutoff records matching the criteria
+    """
+    logger.info(f"get_cutoffs_flexible called: branch={branch}, category={category}, gender={gender}, year={year}")
+    
+    # Normalize inputs if provided
+    if branch:
+        branch = _normalise_branch(branch)
+    if category:
+        category = _normalise_category(category)
+    
+    db = get_db()
+    if db is None:
+        logger.warning("Firestore not available. Cannot query cutoff data.")
+        return []
+
+    query = db.collection(COLLECTION)
+
+    # Apply filters only for non-None parameters
+    if branch:
+        query = query.where(filter=FieldFilter("branch", "==", branch))
+    if category:
+        query = query.where(filter=FieldFilter("category", "==", category))
+    if gender:
+        query = query.where(filter=FieldFilter("gender", "==", gender))
+    if quota:
+        query = query.where(filter=FieldFilter("quota", "==", quota))
+    if year:
+        query = query.where(filter=FieldFilter("year", "==", year))
+    if round_num:
+        query = query.where(filter=FieldFilter("round", "==", round_num))
+
+    # Fetch documents
+    docs = query.limit(limit).stream()
+    rows = [doc.to_dict() for doc in docs]
+    
+    logger.info(f"get_cutoffs_flexible returned {len(rows)} rows")
+    
+    # Handle old 'caste' field for EWS records
+    if category == "EWS" or not category:
+        alt_query = db.collection(COLLECTION)
+        if branch:
+            alt_query = alt_query.where(filter=FieldFilter("branch", "==", branch))
+        if category:
+            alt_query = alt_query.where(filter=FieldFilter("caste", "==", category))
+        if gender:
+            alt_query = alt_query.where(filter=FieldFilter("gender", "==", gender))
+        if quota:
+            alt_query = alt_query.where(filter=FieldFilter("quota", "==", quota))
+        if year:
+            alt_query = alt_query.where(filter=FieldFilter("year", "==", year))
+        
+        alt_docs = alt_query.limit(limit).stream()
+        for doc in alt_docs:
+            d = doc.to_dict()
+            # Normalize old field names
+            if "caste" in d and "category" not in d:
+                d["category"] = d["caste"]
+            if "cutoff_rank" not in d:
+                d["cutoff_rank"] = d.get("last_rank") or d.get("first_rank")
+            if d.get("cutoff_rank") is not None and d not in rows:
+                rows.append(d)
+    
+    # Sort by year (desc), branch, category, round (desc)
+    rows.sort(
+        key=lambda r: (
+            r.get("year", 0),
+            r.get("branch", ""),
+            r.get("category", ""),
+            r.get("round", 0)
+        ),
+        reverse=True,
+    )
+    
+    return rows
+
+
+def format_cutoffs_table(
+    cutoffs: list[dict],
+    title: str = "Cutoff Ranks",
+    max_rows: int = 50,
+) -> str:
+    """
+    Format a list of cutoff records into a readable table/message.
+    
+    Parameters
+    ----------
+    cutoffs : list[dict] – Cutoff records from get_cutoffs_flexible
+    title : str – Title for the table
+    max_rows : int – Maximum rows to display
+    
+    Returns
+    -------
+    str : Formatted message with cutoff data
+    """
+    if not cutoffs:
+        return "No cutoff data found for the specified criteria. The data may not be available yet."
+    
+    # Group by branch for better readability
+    by_branch = {}
+    for row in cutoffs[:max_rows]:
+        branch = row.get("branch", "Unknown")
+        if branch not in by_branch:
+            by_branch[branch] = []
+        by_branch[branch].append(row)
+    
+    lines = [f"## {title}\n"]
+    
+    for branch, records in by_branch.items():
+        lines.append(f"\n### {branch}")
+        
+        # Group by year within branch
+        by_year = {}
+        for rec in records:
+            year = rec.get("year", "N/A")
+            if year not in by_year:
+                by_year[year] = []
+            by_year[year].append(rec)
+        
+        for year in sorted(by_year.keys(), reverse=True):
+            year_records = by_year[year]
+            lines.append(f"\n**Year {year}:**")
+            
+            for rec in year_records:
+                category = rec.get("category", "N/A")
+                gender = rec.get("gender", "N/A")
+                rank = rec.get("cutoff_rank", rec.get("last_rank", "N/A"))
+                round_num = rec.get("round", "N/A")
+                quota = rec.get("quota", "Convenor")
+                
+                if isinstance(rank, (int, float)):
+                    rank_str = f"{int(rank):,}"
+                else:
+                    rank_str = str(rank)
+                
+                lines.append(
+                    f"- **{category}** ({gender}) - Round {round_num}: **{rank_str}** ({quota} quota)"
+                )
+    
+    if len(cutoffs) > max_rows:
+        lines.append(f"\n\n_Showing first {max_rows} of {len(cutoffs)} results._")
+    
+    lines.append("\n\n⚠️ _These are based on previous year data and cutoffs may vary._")
+    
+    return "\n".join(lines)

@@ -334,12 +334,18 @@
     
     // Add language change button at the bottom
     addLanguageChangeButton();
+    
+    // Hide input area when showing welcome buttons
+    inputArea.style.display = "none";
   }
 
   /** Show language selector on first interaction */
   function showLanguageSelector() {
     console.log("showLanguageSelector called");
     addBotMessage(t("language_prompt"));
+    
+    // Hide input area when showing language selector
+    inputArea.style.display = "none";
     
     const wrapper = document.createElement("div");
     wrapper.className = "message bot";
@@ -375,6 +381,8 @@
         setLanguage(code);
         addUserMessage(info.native);
         showWelcome();  // Show welcome in selected language
+        // Keep input visible for continuous interaction
+        showInputArea();
       });
       grid.appendChild(btn);
     });
@@ -466,8 +474,8 @@
         e.stopPropagation();
         wrapper.remove();
         addUserMessage(cat);
-        // Send the query in user's language to backend
-        sendMessage(cat);
+        // Send the query (skip adding user message since we already added it above)
+        sendMessage(cat, true);
       });
       grid.appendChild(btn);
     });
@@ -480,11 +488,13 @@
     othersBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       wrapper.remove();
-      addUserMessage(othersText);
+      // Don't add user message here - just show input area
+      // User will type their own question
       showInputArea();
-      // For Others, just show the input
+      inputEl.focus();
+      // Optionally show a prompt
       if (currentLanguage !== "en") {
-        addBotMessage("Please type your question:");  // Will be translated by backend
+        addBotMessage("Please type your question:");
       }
     });
     grid.appendChild(othersBtn);
@@ -526,6 +536,11 @@
 
   function addBotMessage(text) {
     addMessage(text, "bot");
+    // Always show and enable input area after bot message
+    // This ensures users can type their answers during conversation flows
+    showInputArea();
+    inputEl.disabled = false;
+    sendBtn.disabled = false;
   }
 
   function addUserMessage(text) {
@@ -576,6 +591,10 @@
   /** Show the input area (hidden until user picks a category) */
   function showInputArea() {
     inputArea.style.display = "";
+    // Focus on input field when shown (if chat is open)
+    if (isOpen) {
+      setTimeout(() => inputEl.focus(), 100);
+    }
   }
 
   function scrollToBottom() {
@@ -656,11 +675,16 @@
 
   // ── API Communication ────────────────────────────────────────
 
-  async function sendMessage(text) {
+  async function sendMessage(text, skipAddingUserMessage = false) {
     if (!text || !text.trim() || isSending) return;
 
     const userText = text.trim();
-    addUserMessage(userText);
+    
+    // Only add user message if not already added (prevents duplicates)
+    if (!skipAddingUserMessage) {
+      addUserMessage(userText);
+    }
+    
     inputEl.value = "";
     inputEl.disabled = true;
     sendBtn.disabled = true;
