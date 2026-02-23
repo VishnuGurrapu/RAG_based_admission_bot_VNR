@@ -18,106 +18,48 @@ import uuid
 from collections import defaultdict
 from pathlib import Path
 
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
+from openai import OpenAI
+from app.config import get_settings
+from app.classifier.intent_classifier import IntentType, classify
+from app.logic.cutoff_engine import (
+    check_eligibility,
+    get_cutoff,
+    get_all_cutoffs_for_branch,
+    get_cutoffs_flexible,
+    format_cutoffs_table,
+    list_branches,
+)
+from app.rag.retriever import retrieve
+from app.utils.validators import (
+    extract_branch,
+    extract_branches,
+    extract_category,
+    extract_gender,
+    extract_rank,
+    extract_year,
+    sanitise_input,
+)
+from app.utils.token_manager import (
+    trim_history_smart,
+    log_token_usage,
+    count_messages_tokens,
+    should_warn,
+)
+from app.utils.languages import (
+    detect_language,
+    detect_language_change_request,
+    get_translation,
+    get_language_instruction,
+    get_language_selector_message,
+    get_greeting_message,
+    get_out_of_scope_message,
+    SUPPORTED_LANGUAGES,
+    DEFAULT_LANGUAGE,
+)
+
 logger = logging.getLogger(__name__)
-logger.info("chat.py: starting imports...")
-
-try:
-    from fastapi import APIRouter, HTTPException, Request
-    from pydantic import BaseModel, Field
-    from openai import OpenAI
-    logger.info("chat.py: FastAPI/Pydantic/OpenAI imports OK")
-except Exception as e:
-    logger.error(f"chat.py: FAILED FastAPI/Pydantic/OpenAI imports: {e}")
-    traceback.print_exc()
-    raise
-
-try:
-    from app.config import get_settings
-    logger.info("chat.py: app.config OK")
-except Exception as e:
-    logger.error(f"chat.py: FAILED app.config: {e}")
-    traceback.print_exc()
-    raise
-
-try:
-    from app.classifier.intent_classifier import IntentType, classify
-    logger.info("chat.py: intent_classifier OK")
-except Exception as e:
-    logger.error(f"chat.py: FAILED intent_classifier: {e}")
-    traceback.print_exc()
-    raise
-
-try:
-    from app.logic.cutoff_engine import (
-        check_eligibility,
-        get_cutoff,
-        get_all_cutoffs_for_branch,
-        get_cutoffs_flexible,
-        format_cutoffs_table,
-        list_branches,
-    )
-    logger.info("chat.py: cutoff_engine OK")
-except Exception as e:
-    logger.error(f"chat.py: FAILED cutoff_engine: {e}")
-    traceback.print_exc()
-    raise
-
-try:
-    from app.rag.retriever import retrieve
-    logger.info("chat.py: retriever OK")
-except Exception as e:
-    logger.error(f"chat.py: FAILED retriever: {e}")
-    traceback.print_exc()
-    raise
-
-try:
-    from app.utils.validators import (
-        extract_branch,
-        extract_branches,
-        extract_category,
-        extract_gender,
-        extract_rank,
-        extract_year,
-        sanitise_input,
-    )
-    logger.info("chat.py: validators OK")
-except Exception as e:
-    logger.error(f"chat.py: FAILED validators: {e}")
-    traceback.print_exc()
-    raise
-
-try:
-    from app.utils.token_manager import (
-        trim_history_smart,
-        log_token_usage,
-        count_messages_tokens,
-        should_warn,
-    )
-    logger.info("chat.py: token_manager OK")
-except Exception as e:
-    logger.error(f"chat.py: FAILED token_manager: {e}")
-    traceback.print_exc()
-    raise
-
-try:
-    from app.utils.languages import (
-        detect_language,
-        detect_language_change_request,
-        get_translation,
-        get_language_instruction,
-        get_language_selector_message,
-        get_greeting_message,
-        get_out_of_scope_message,
-        SUPPORTED_LANGUAGES,
-        DEFAULT_LANGUAGE,
-    )
-    logger.info("chat.py: languages OK")
-except Exception as e:
-    logger.error(f"chat.py: FAILED languages: {e}")
-    traceback.print_exc()
-    raise
-
-logger.info("chat.py: all imports succeeded")
 
 settings = get_settings()
 router = APIRouter()
@@ -406,8 +348,6 @@ def _build_multi_branch_reply(
     # Handle "ALL" cases with flexible query (ALL branches, categories, or genders)
     if branches == ["ALL"] or "ALL" in branches or category == "ALL" or gender == "ALL":
         # Use flexible query function
-        logger.info(f"Using flexible cutoff query: branches={branches}, category={category}, gender={gender}")
-        
         # Determine branches to query
         query_branches = []
         if branches == ["ALL"] or (isinstance(branches, list) and "ALL" in branches):
@@ -744,8 +684,6 @@ async def chat(req: ChatRequest, request: Request):
                 else:
                     url_to_fetch = settings.VNRVJIET_WEBSITE_URLS.get(url_category, settings.VNRVJIET_WEBSITE_URLS["general"])
                 
-                logger.info(f"Fetching website for query '{original_query}': {url_to_fetch}")
-                
                 # Load and use fetch_webpage tool
                 from app.utils.web_fetcher import fetch_webpage_content
                 web_content = fetch_webpage_content(url_to_fetch)
@@ -808,7 +746,6 @@ async def chat(req: ChatRequest, request: Request):
     if session_id in _session_contact_data:
         # Check if user wants to change topic/exit collection flow
         if _is_topic_change(user_msg, current_flow="contact_request"):
-            logger.info(f"Topic change detected in contact collection flow for session {session_id}")
             del _session_contact_data[session_id]
             # Don't return - continue processing the new query below
         else:
@@ -981,7 +918,6 @@ async def chat(req: ChatRequest, request: Request):
         flow = collected.get("_flow", "cutoff")
         
         if _is_topic_change(user_msg, current_flow=flow):
-            logger.info(f"Topic change detected in {flow} collection flow for session {session_id}")
             del _session_cutoff_data[session_id]
             _session_pending_intent.pop(session_id, None)
             # Don't return - continue processing the new query below
@@ -1202,7 +1138,6 @@ async def chat(req: ChatRequest, request: Request):
     pending = _session_pending_intent.get(session_id)
     if pending == "awaiting_cutoff_details" and intent == IntentType.INFORMATIONAL:
         intent = IntentType.CUTOFF
-        logger.info("Overriding intent to CUTOFF (session was awaiting details)")
 
     # ── Greeting ──────────────────────────────────────────────
     if intent == IntentType.GREETING:
@@ -1577,8 +1512,6 @@ async def clear_session(req: ChatRequest):
     if session_id in _session_language:
         del _session_language[session_id]
         cleared.append("language")
-    
-    logger.info(f"Cleared session {session_id}: {', '.join(cleared) if cleared else 'no data found'}")
     
     return {
         "status": "ok",

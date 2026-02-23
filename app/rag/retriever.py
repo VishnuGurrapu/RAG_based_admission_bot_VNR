@@ -79,7 +79,6 @@ def _translate_to_english(query: str) -> str:
         )
         
         translation = response.choices[0].message.content.strip()
-        logger.info(f"Translated '{query[:50]}...' to '{translation}'")
         return translation
         
     except Exception as e:
@@ -128,7 +127,6 @@ def retrieve(
     # Translate non-English queries to English for better retrieval
     search_query = query
     if _is_non_english(query):
-        logger.info(f"Non-English query detected, translating for retrieval: {query[:50]}...")
         search_query = _translate_to_english(query)
     
     # Embed the query (use translated version if non-English)
@@ -151,30 +149,11 @@ def retrieve(
     # Use attribute access (works with Pinecone client v3+/v4+/v5+)
     matches = getattr(results, "matches", None) or []
 
-    if search_query != query:
-        logger.info(
-            "Pinecone returned %d matches for translated query: '%s' (original: '%s')",
-            len(matches),
-            search_query[:80],
-            query[:80],
-        )
-    else:
-        logger.info(
-            "Pinecone returned %d matches for query: '%s'",
-            len(matches),
-            query[:80],
-        )
-
     chunks: list[RetrievedChunk] = []
     for match in matches:
         score = getattr(match, "score", 0.0)
         meta = getattr(match, "metadata", {}) or {}
 
-        logger.info(
-            "  Match: score=%.3f, file=%s",
-            score,
-            meta.get("filename", "?"),
-        )
         if score < score_threshold:
             continue
         chunks.append(

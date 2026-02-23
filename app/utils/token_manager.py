@@ -166,7 +166,6 @@ SUMMARY:"""
         )
         
         summary = response.choices[0].message.content.strip()
-        logger.info(f"Summarized {len(history)} messages into {count_tokens(summary)} tokens")
         
         return {
             "role": "system",
@@ -223,16 +222,12 @@ def trim_history_smart(
     fixed_tokens = system_tokens + user_tokens + context_tokens + cutoff_tokens
     available_for_history = get_available_tokens(model) - fixed_tokens
     
-    logger.debug(f"Token budget: fixed={fixed_tokens}, available_for_history={available_for_history}")
-    
     # Count history tokens
     history_tokens = count_messages_tokens(history, model)
     
     if history_tokens <= available_for_history:
         # No trimming needed
         return history
-    
-    logger.info(f"History tokens ({history_tokens}) exceed available budget ({available_for_history})")
     
     # Strategy: Keep last N messages, summarize the rest
     RECENT_MESSAGES_TO_KEEP = 4  # Keep last 2 exchanges (4 messages)
@@ -246,7 +241,6 @@ def trim_history_smart(
     recent_history = history[-RECENT_MESSAGES_TO_KEEP:]
     
     # Summarize old history
-    logger.info(f"Summarizing {len(old_history)} old messages")
     summary_msg = summarize_conversation(old_history, client, model)
     
     # Build new history: [summary, recent messages]
@@ -257,10 +251,9 @@ def trim_history_smart(
     
     if new_history_tokens > available_for_history:
         # Still too large, keep only recent messages
-        logger.warning(f"Even after summarization, history too large. Keeping only recent messages.")
+        logger.warning(f"History too large even after summarization. Keeping only recent messages.")
         return recent_history[-2:]  # Keep only last exchange
     
-    logger.info(f"History optimized: {history_tokens} -> {new_history_tokens} tokens")
     return new_history
 
 

@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Optional
 import os
+import json
 from pathlib import Path
 
 from google.oauth2 import service_account
@@ -20,23 +21,40 @@ class GoogleSheetsService:
     
     def __init__(self):
         """Initialize Google Sheets service"""
-        # Get credentials path from environment or default location
-        creds_path = os.getenv(
-            'GOOGLE_SERVICE_ACCOUNT_PATH',
-            'google-service-account.json'
-        )
+        # Try to load credentials from environment variable first
+        creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON_CONTENT")
         
-        if not Path(creds_path).exists():
-            raise FileNotFoundError(
-                f"Google service account file not found: {creds_path}\n"
-                "Please download it from Google Cloud Console and save it in the project root."
+        if creds_json:
+            # Load credentials from environment variable
+            try:
+                creds_dict = json.loads(creds_json)
+                self.credentials = service_account.Credentials.from_service_account_info(
+                    creds_dict,
+                    scopes=self.SCOPES
+                )
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to load Google credentials from environment variable: {e}\n"
+                    "Please ensure GOOGLE_CREDENTIALS_JSON_CONTENT is valid JSON."
+                )
+        else:
+            # Fall back to file-based credentials
+            creds_path = os.getenv(
+                'GOOGLE_SERVICE_ACCOUNT_PATH',
+                'google-service-account.json'
             )
-        
-        # Load credentials
-        self.credentials = service_account.Credentials.from_service_account_file(
-            creds_path,
-            scopes=self.SCOPES
-        )
+            
+            if not Path(creds_path).exists():
+                raise FileNotFoundError(
+                    f"Google service account file not found: {creds_path}\n"
+                    "Please set GOOGLE_CREDENTIALS_JSON_CONTENT in .env or download the credentials file."
+                )
+            
+            # Load credentials from file
+            self.credentials = service_account.Credentials.from_service_account_file(
+                creds_path,
+                scopes=self.SCOPES
+            )
         
         # Build service
         self.service = build('sheets', 'v4', credentials=self.credentials)
