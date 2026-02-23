@@ -1266,6 +1266,38 @@ async def chat(req: ChatRequest, request: Request):
     sources: list[str] = []
     rag_context = ""
 
+    # ── Gender-change follow-up (early catch regardless of intent) ────────────
+    # e.g. user says "for girl" / "for boys" after a cutoff query was shown.
+    # Handle here so even if the intent classifier misses CUTOFF, we still respond correctly.
+    if (
+        gender and not branch and not category and not rank
+        and session_id in _session_last_cutoff
+        and intent not in (IntentType.ELIGIBILITY,)
+    ):
+        last = _session_last_cutoff[session_id]
+        last_branches = last["branch"] if isinstance(last["branch"], list) else [last["branch"]]
+        last_category = last["category"]
+        last_year = year or last.get("year")
+        _session_last_cutoff[session_id] = {
+            "branch": last_branches,
+            "category": last_category,
+            "gender": gender,
+            "year": last_year,
+        }
+        reply_text = _build_multi_branch_reply(
+            last_branches, last_category, gender,
+            rank=None, show_trend=_detect_trend_request(user_msg), year=last_year
+        )
+        sources.append("VNRVJIET Cutoff Database")
+        _session_history[session_id].append({"role": "user", "content": user_msg})
+        _session_history[session_id].append({"role": "assistant", "content": reply_text})
+        return ChatResponse(
+            reply=reply_text, intent="cutoff",
+            session_id=session_id,
+            sources=["VNRVJIET Cutoff Database"],
+            language=current_language,
+        )
+
     # ── Cutoff / Eligibility path ─────────────────────────────
     if intent in (IntentType.CUTOFF, IntentType.ELIGIBILITY, IntentType.MIXED):
         # Determine flow type
@@ -1306,7 +1338,45 @@ async def chat(req: ChatRequest, request: Request):
             show_trend = collected.get("_show_trend", False)
             cutoff_info = _build_multi_branch_reply(b_list, category, gender, rank if is_eligibility else None, show_trend=show_trend, year=collected.get("year"))
             sources.append("VNRVJIET Cutoff Database")
+            # Save for gender-change follow-ups (e.g. user next says "for girl" / "for boys")
+            if not is_eligibility and not rank:
+                _session_last_cutoff[session_id] = {
+                    "branch": b_list,
+                    "category": category,
+                    "gender": gender,
+                    "year": collected.get("year"),
+                }
         else:
+            # Check if user is changing gender for the same branch/category (cutoff query)
+            # e.g., user said "for girl" after seeing boys cutoff → re-query with new gender
+            if not is_eligibility and session_id in _session_last_cutoff and gender and "branch" not in collected:
+                last = _session_last_cutoff[session_id]
+                last_branches = last["branch"] if isinstance(last["branch"], list) else [last["branch"]]
+                last_category = last["category"]
+                last_year = collected.get("year") or last.get("year")
+
+                # Update last cutoff record with new gender
+                _session_last_cutoff[session_id] = {
+                    "branch": last_branches,
+                    "category": last_category,
+                    "gender": gender,
+                    "year": last_year,
+                }
+
+                reply_text = _build_multi_branch_reply(
+                    last_branches, last_category, gender,
+                    rank=None, show_trend=show_trend, year=last_year
+                )
+                sources.append("VNRVJIET Cutoff Database")
+                _session_history[session_id].append({"role": "user", "content": user_msg})
+                _session_history[session_id].append({"role": "assistant", "content": reply_text})
+                return ChatResponse(
+                    reply=reply_text, intent=intent.value,
+                    session_id=session_id,
+                    sources=["VNRVJIET Cutoff Database"],
+                    language=current_language,
+                )
+
             # Check if we can reuse recent cutoff data for eligibility query
             if is_eligibility and session_id in _session_last_cutoff and "branch" not in collected:
                 last = _session_last_cutoff[session_id]

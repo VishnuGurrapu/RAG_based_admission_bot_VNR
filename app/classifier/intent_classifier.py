@@ -71,10 +71,23 @@ _CUTOFF_KEYWORDS: list[str] = [
 ]
 
 _ELIGIBILITY_KEYWORDS: list[str] = [
-    "eligible", "eligibility", "can i get", "will i get",
-    "chance", "get admission", "my rank", "admission chance",
-    "will i", "can i", "do i qualify", "am i eligible",
+    "eligible", "eligibility",
+    "can i get admission", "can i get a seat", "can i get into",
+    "will i get admission", "will i get a seat", "will i get into",
+    "get admission", "my rank", "admission chance",
+    "do i qualify", "am i eligible",
     "check eligibility", "seat eligibility", "rank check",
+]
+
+# Topics that are clearly informational and must NOT be misclassified as eligibility
+# even if they contain words like "can i", "will i", "get"
+_INFORMATIONAL_OVERRIDE_KEYWORDS: list[str] = [
+    "hostel", "refund", "fee refund", "mess", "accommodation",
+    "placement", "scholarship", "library", "lab", "transport",
+    "document", "certificate", "faculty", "campus", "facility",
+    "canteen", "cafeteria", "sports", "club", "event",
+    "leave hostel", "vacate", "withdraw", "cancel admission",
+    "infrastructure", "wifi", "internet", "medical",
 ]
 
 _GREETING_KEYWORDS: list[str] = [
@@ -130,6 +143,9 @@ def _has_cutoff_intent(query: str) -> bool:
 
 def _has_eligibility_intent(query: str) -> bool:
     q = query.lower()
+    # If it's clearly about a non-admission topic, it's informational
+    if any(kw in q for kw in _INFORMATIONAL_OVERRIDE_KEYWORDS):
+        return False
     return any(kw in q for kw in _ELIGIBILITY_KEYWORDS)
 
 

@@ -19,9 +19,12 @@ Admissions to VNRVJIET are conducted through the following modes:
    - Based on TS EAMCET / JEE Main rank
    - Apply directly at the VNRVJIET admissions office or website
 
-3. **NRI / Spot Admissions**
-   - Limited seats available
-   - Contact admissions office directly
+3. **NRI / FN / OCI / CIWG Quota**
+   - Limited seats available per branch
+   - Eligibility: OCI cardholders, OR children of parents working in GCC countries (Bahrain, Kuwait, Oman, Qatar, Saudi Arabia, UAE) with a valid Visa/Work Permit, OR Foreign Nationals
+   - Fee (2025-26): ₹4,30,000/yr (CSE/ECE/IT/AI branches), ₹3,01,000/yr (Civil/EEE/ME), ₹2,58,000/yr (Auto/EIE)
+   - Contact admissions office for step-by-step process: admissionsenquiry@vnrvjiet.in | +91-40-2304 2758
+   - ⚠️ VNRVJIET does NOT use agents/consultants for NRI/Category-B admissions
 
 Eligibility Criteria
 --------------------
