@@ -9,6 +9,9 @@ Chat API – the core endpoint that orchestrates:
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import logging
 import re
 import sys
@@ -19,8 +22,9 @@ from collections import defaultdict
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 from app.config import get_settings
 from app.classifier.intent_classifier import IntentType, classify
 from app.logic.cutoff_engine import (
@@ -31,7 +35,7 @@ from app.logic.cutoff_engine import (
     format_cutoffs_table,
     list_branches,
 )
-from app.rag.retriever import retrieve
+from app.rag.retriever import retrieve, retrieve_async
 from app.utils.validators import (
     extract_branch,
     extract_branches,
@@ -72,6 +76,11 @@ MAX_HISTORY = 10
 _session_history: dict[str, list[dict]] = defaultdict(list)
 _session_pending_intent: dict[str, str] = {}  # tracks if we asked for cutoff details
 _session_language: dict[str, str] = {}  # stores language preference per session
+
+# ── Response caching (in-memory) ──────────────────────────
+# Cache common queries to reduce API calls and latency
+CACHE_TTL = 1800  # 30 minutes
+_response_cache: dict[str, tuple[str, float, str, list[str]]] = {}  # key -> (reply, timestamp, intent, sources)
 
 # ── Cutoff collection state (per-session) ─────────────────
 # Stores partially collected cutoff fields as user answers one by one.
@@ -127,6 +136,54 @@ def _check_rate_limit(ip: str) -> None:
             detail="Rate limit exceeded. Please wait a moment and try again.",
         )
     _rate_buckets[ip].append(now)
+
+
+def _get_cache_key(query: str, intent: str, language: str = "en") -> str:
+    """
+    Generate cache key from normalized query + intent + language.
+    Uses MD5 hash for efficient key lookup.
+    """
+    normalized = query.lower().strip()
+    # Remove special characters and extra spaces
+    normalized = re.sub(r'[^\w\s]', '', normalized)
+    normalized = re.sub(r'\s+', ' ', normalized)
+    key_string = f"{normalized}:{intent}:{language}"
+    return hashlib.md5(key_string.encode()).hexdigest()
+
+
+def _get_cached_response(query: str, intent: str, language: str = "en") -> tuple[str, list[str]] | None:
+    """
+    Get cached response if available and fresh.
+    Returns (reply, sources) tuple or None.
+    """
+    key = _get_cache_key(query, intent, language)
+    if key in _response_cache:
+        reply, timestamp, cached_intent, sources = _response_cache[key]
+        # Check if cache is still fresh
+        if time.time() - timestamp < CACHE_TTL:
+            logger.info(f"Cache HIT for query: {query[:50]}...")
+            return (reply, sources)
+        else:
+            # Cache expired
+            del _response_cache[key]
+    return None
+
+
+def _cache_response(query: str, intent: str, reply: str, sources: list[str], language: str = "en") -> None:
+    """
+    Cache a response for future reuse.
+    Automatically manages cache size (keep last 1000 entries).
+    """
+    key = _get_cache_key(query, intent, language)
+    _response_cache[key] = (reply, time.time(), intent, sources)
+    
+    # Limit cache size to prevent memory bloat
+    if len(_response_cache) > 1000:
+        # Remove oldest 200 entries
+        sorted_keys = sorted(_response_cache.keys(), key=lambda k: _response_cache[k][1])
+        for old_key in sorted_keys[:200]:
+            del _response_cache[old_key]
+        logger.info(f"Cache cleanup: removed 200 old entries, {len(_response_cache)} remaining")
 
 
 def _detect_trend_request(message: str) -> bool:
@@ -430,6 +487,7 @@ class ChatResponse(BaseModel):
 # ── LLM caller ────────────────────────────────────────────────
 
 _openai_client: OpenAI | None = None
+_async_openai_client: AsyncOpenAI | None = None
 
 
 def _get_openai() -> OpenAI:
@@ -437,6 +495,13 @@ def _get_openai() -> OpenAI:
     if _openai_client is None:
         _openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
     return _openai_client
+
+
+def _get_async_openai() -> AsyncOpenAI:
+    global _async_openai_client
+    if _async_openai_client is None:
+        _async_openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    return _async_openai_client
 
 
 def _load_system_prompt() -> str:
@@ -576,6 +641,118 @@ def _generate_llm_response(
         raise
 
 
+async def _generate_llm_response_async(
+    user_message: str,
+    context: str = "",
+    cutoff_info: str = "",
+    history: list[dict] | None = None,
+    session_id: str = "unknown",
+    language: str = DEFAULT_LANGUAGE,
+) -> str:
+    """
+    Async version of _generate_llm_response for better performance.
+    Uses AsyncOpenAI client to avoid blocking the event loop.
+    """
+    system = _get_system_prompt()
+    
+    # Add language instruction to system prompt
+    lang_instruction = get_language_instruction(language)
+    system_with_lang = f"{system}\n\n**IMPORTANT: {lang_instruction}**"
+    
+    client = _get_async_openai()
+
+    user_content_parts = [f"User question: {user_message}"]
+
+    if cutoff_info:
+        user_content_parts.append(f"\n--- Cutoff Data (from database) ---\n{cutoff_info}")
+
+    if context:
+        user_content_parts.append(f"\n--- Retrieved Context ---\n{context}")
+
+    if not cutoff_info and not context:
+        user_content_parts.append(
+            "\n[No specific context was retrieved. Answer based on general VNRVJIET knowledge "
+            "in the system prompt, or state that the information is unavailable.]"
+        )
+
+    user_content = "\n".join(user_content_parts)
+
+    # Smart history trimming (use sync client for now, can be optimized later)
+    trimmed_history = []
+    if history:
+        try:
+            # Use sync client for trimming (trim_history_smart is sync)
+            sync_client = _get_openai()
+            trimmed_history = trim_history_smart(
+                history=history,
+                system_prompt=system_with_lang,
+                user_message=user_content,
+                context=context,
+                cutoff_info=cutoff_info,
+                client=sync_client,
+                model=settings.OPENAI_MODEL,
+            )
+        except Exception as e:
+            logger.error(f"Failed to trim history smartly: {e}. Using basic trimming.")
+            trimmed_history = history[-MAX_HISTORY:] if history else []
+
+    # Build messages
+    messages: list[dict] = [{"role": "system", "content": system_with_lang}]
+    messages.extend(trimmed_history)
+    messages.append({"role": "user", "content": user_content})
+
+    # Log token usage
+    try:
+        log_token_usage(messages, settings.OPENAI_MODEL, session_id)
+    except Exception as e:
+        logger.warning(f"Failed to log token usage: {e}")
+
+    # Call OpenAI async with error handling
+    try:
+        response = await client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=600,
+        )
+        return response.choices[0].message.content.strip()
+    
+    except Exception as e:
+        error_str = str(e).lower()
+        
+        # Handle token limit errors
+        if "maximum context length" in error_str or "token" in error_str:
+            logger.error(
+                f"Token limit exceeded for session {session_id}. "
+                f"Attempting recovery with minimal context."
+            )
+            
+            # Emergency fallback: use only system prompt + current message
+            minimal_messages = [
+                {"role": "system", "content": system_with_lang},
+                {"role": "user", "content": user_message}  # No context
+            ]
+            
+            try:
+                response = await client.chat.completions.create(
+                    model=settings.OPENAI_MODEL,
+                    messages=minimal_messages,
+                    temperature=0.3,
+                    max_tokens=600,
+                )
+                return response.choices[0].message.content.strip()
+            except Exception as e2:
+                logger.error(f"Recovery attempt failed: {e2}")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Context too large. Please start a new conversation."
+                )
+        
+        # Re-raise other errors
+        logger.error(f"OpenAI API error: {e}")
+        raise
+
+
 # ── Greeting handler ──────────────────────────────────────────
 
 _GREETING_REPLY = (
@@ -597,7 +774,176 @@ _OUT_OF_SCOPE_REPLY = (
 )
 
 
-# ── Main endpoint ─────────────────────────────────────────────
+# ── Main endpoints ────────────────────────────────────────────
+
+@router.post("/chat/stream")
+async def chat_stream(req: ChatRequest, request: Request):
+    """
+    Streaming chat endpoint - provides ChatGPT-like typing effect.
+    
+    Hybrid approach:
+    - Uses cache for repeat questions (instant response)
+    - Streams new responses token-by-token for better UX
+    - Automatically saves streamed responses to cache
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    _check_rate_limit(client_ip)
+    
+    user_msg = sanitise_input(req.message)
+    session_id = req.session_id or str(uuid.uuid4())
+    
+    if not user_msg:
+        async def error_stream():
+            yield f"data: {json.dumps({'error': 'Message cannot be empty', 'done': True})}\n\n"
+        return StreamingResponse(error_stream(), media_type="text/event-stream")
+    
+    # Get current language
+    current_language = _session_language.get(session_id, DEFAULT_LANGUAGE)
+    if req.language and req.language in SUPPORTED_LANGUAGES:
+        current_language = req.language
+        _session_language[session_id] = current_language
+    else:
+        detected_lang = detect_language(user_msg)
+        if detected_lang != current_language:
+            current_language = detected_lang
+            _session_language[session_id] = detected_lang
+    
+    async def generate():
+        try:
+            # Extract query data
+            branch = extract_branch(user_msg)
+            category = extract_category(user_msg)
+            gender = extract_gender(user_msg)
+            rank = extract_rank(user_msg)
+            year = extract_year(user_msg)
+            
+            # Classify intent
+            classification = classify(user_msg)
+            intent = classification.intent
+            
+            # Check cache first for informational queries
+            if intent == IntentType.INFORMATIONAL:
+                cached = _get_cached_response(user_msg, intent.value, current_language)
+                if cached:
+                    reply, cached_sources = cached
+                    logger.info(f"Cache HIT (streaming): {user_msg[:50]}...")
+                    
+                    # Stream cached response word by word for consistent UX
+                    words = reply.split()
+                    for i, word in enumerate(words):
+                        yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                        if i % 5 == 0:  # Brief pause every 5 words
+                            await asyncio.sleep(0.02)
+                    
+                    # Send metadata
+                    yield f"data: {json.dumps({'token': '', 'done': True, 'intent': intent.value, 'sources': cached_sources, 'session_id': session_id})}\n\n"
+                    
+                    # Update history
+                    _session_history[session_id].append({"role": "user", "content": user_msg})
+                    _session_history[session_id].append({"role": "assistant", "content": reply})
+                    return
+            
+            # Handle greetings quickly (no streaming needed)
+            if intent == IntentType.GREETING:
+                greeting = get_greeting_message(current_language)
+                words = greeting.split()
+                for word in words:
+                    yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                    await asyncio.sleep(0.02)
+                yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'greeting', 'session_id': session_id})}\n\n"
+                _session_history[session_id].append({"role": "user", "content": user_msg})
+                _session_history[session_id].append({"role": "assistant", "content": greeting})
+                return
+            
+            # For complex queries, gather context and stream LLM response
+            rag_context = ""
+            cutoff_info = ""
+            sources = []
+            
+            # Handle cutoff queries (no streaming needed - direct response)
+            if intent in (IntentType.CUTOFF, IntentType.ELIGIBILITY) and branch and category and gender:
+                if intent == IntentType.ELIGIBILITY and rank:
+                    result = check_eligibility(rank, branch, category, year=year, gender=gender)
+                    cutoff_info = result.message
+                elif branch:
+                    cutoff_info = _build_multi_branch_reply([branch], category, gender, year=year)
+                sources.append("VNRVJIET Cutoff Database")
+                
+                # Stream cutoff response
+                words = cutoff_info.split()
+                for word in words:
+                    yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                    await asyncio.sleep(0.015)  # Faster for structured data
+                yield f"data: {json.dumps({'token': '', 'done': True, 'intent': intent.value, 'sources': sources, 'session_id': session_id})}\n\n"
+                
+                _session_history[session_id].append({"role": "user", "content": user_msg})
+                _session_history[session_id].append({"role": "assistant", "content": cutoff_info})
+                return
+            
+            # RAG retrieval for informational queries
+            if intent in (IntentType.INFORMATIONAL, IntentType.MIXED):
+                try:
+                    top_k = 8 if intent == IntentType.MIXED else 5
+                    rag_result = await retrieve_async(user_msg, top_k=top_k)
+                    rag_context = rag_result.context_text
+                    for chunk in rag_result.chunks:
+                        sources.append(f"{chunk.filename} ({chunk.source})")
+                except Exception as e:
+                    logger.error(f"RAG retrieval failed: {e}")
+            
+            # Stream LLM response
+            system = _get_system_prompt()
+            lang_instruction = get_language_instruction(current_language)
+            system_with_lang = f"{system}\n\n**IMPORTANT: {lang_instruction}**"
+            
+            user_content_parts = [f"User question: {user_msg}"]
+            if cutoff_info:
+                user_content_parts.append(f"\n--- Cutoff Data ---\n{cutoff_info}")
+            if rag_context:
+                user_content_parts.append(f"\n--- Context ---\n{rag_context}")
+            user_content = "\n".join(user_content_parts)
+            
+            history = _session_history.get(session_id, [])
+            trimmed_history = history[-MAX_HISTORY:] if history else []
+            
+            messages = [{"role": "system", "content": system_with_lang}]
+            messages.extend(trimmed_history)
+            messages.append({"role": "user", "content": user_content})
+            
+            # Stream from OpenAI
+            client = _get_async_openai()
+            stream = await client.chat.completions.create(
+                model=settings.OPENAI_MODEL,
+                messages=messages,
+                temperature=0.3,
+                max_tokens=600,
+                stream=True,
+            )
+            
+            full_reply = ""
+            async for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    token = chunk.choices[0].delta.content
+                    full_reply += token
+                    yield f"data: {json.dumps({'token': token, 'done': False})}\n\n"
+            
+            # Send completion signal with metadata
+            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': intent.value, 'sources': list(set(sources)), 'session_id': session_id})}\n\n"
+            
+            # Cache the response for future use
+            if intent == IntentType.INFORMATIONAL:
+                _cache_response(user_msg, intent.value, full_reply, sources, current_language)
+            
+            # Update history
+            _session_history[session_id].append({"role": "user", "content": user_msg})
+            _session_history[session_id].append({"role": "assistant", "content": full_reply})
+            
+        except Exception as e:
+            logger.error(f"Streaming error: {e}", exc_info=True)
+            yield f"data: {json.dumps({'error': str(e), 'done': True})}\n\n"
+    
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, request: Request):
@@ -1356,8 +1702,26 @@ async def chat(req: ChatRequest, request: Request):
 
     # ── RAG path ──────────────────────────────────────────────
     if intent in (IntentType.INFORMATIONAL, IntentType.MIXED):
+        # Check cache first for informational queries
+        if intent == IntentType.INFORMATIONAL and not cutoff_info:
+            cached = _get_cached_response(user_msg, intent.value, current_language)
+            if cached:
+                reply, cached_sources = cached
+                _session_history[session_id].append({"role": "user", "content": user_msg})
+                _session_history[session_id].append({"role": "assistant", "content": reply})
+                return ChatResponse(
+                    reply=reply,
+                    intent=intent.value,
+                    session_id=session_id,
+                    sources=cached_sources,
+                    language=current_language,
+                )
+        
         try:
-            rag_result = retrieve(user_msg, top_k=8)  # Increased from 5 to 8 for better coverage of mixed queries (B.Tech + M.Tech)
+            # Use adaptive top_k: more chunks for mixed queries, fewer for simple ones
+            top_k = 8 if intent == IntentType.MIXED else 5
+            # Use async retrieval for better performance
+            rag_result = await retrieve_async(user_msg, top_k=top_k)
             rag_context = rag_result.context_text
             for chunk in rag_result.chunks:
                 sources.append(f"{chunk.filename} ({chunk.source})")
@@ -1373,7 +1737,8 @@ async def chat(req: ChatRequest, request: Request):
     # ── Generate final answer ─────────────────────────────────
     # Always call LLM first - it has knowledge in system prompt even without RAG context
     history = _session_history.get(session_id, [])
-    reply = _generate_llm_response(
+    # Use async LLM generation for better performance
+    reply = await _generate_llm_response_async(
         user_msg, 
         rag_context, 
         cutoff_info, 
@@ -1438,6 +1803,10 @@ async def chat(req: ChatRequest, request: Request):
     # Save to conversation history
     _session_history[session_id].append({"role": "user", "content": user_msg})
     _session_history[session_id].append({"role": "assistant", "content": reply})
+
+    # Cache informational responses for future reuse (skip cutoff queries as they're user-specific)
+    if intent == IntentType.INFORMATIONAL and not cutoff_info:
+        _cache_response(user_msg, intent.value, reply, sources, current_language)
 
     # Trim history to prevent unbounded growth
     if len(_session_history[session_id]) > MAX_HISTORY * 2:

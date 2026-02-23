@@ -603,6 +603,31 @@
     });
   }
 
+  /**
+   * Scroll to show the top of a specific message element
+   */
+  function scrollToShowMessage(messageElement) {
+    if (!messageElement) return;
+    requestAnimationFrame(() => {
+      messagesEl.scrollTop = messageElement.offsetTop;
+    });
+  }
+
+  /**
+   * Check if the user's question message has reached the viewport top
+   * Returns true when we should stop auto-scrolling
+   */
+  function isMessageTopVisible(messageElement) {
+    if (!messageElement) return true;
+    
+    const messageTop = messageElement.offsetTop;
+    const scrollTop = messagesEl.scrollTop;
+    const threshold = 10; // Stop when user question is just visible at top
+    
+    // Stop scrolling when scroll position reaches the user's question
+    return scrollTop >= (messageTop - threshold);
+  }
+
   // ── Auto-Popup Welcome Messages ──────────────────────────────
 
   /**
@@ -693,7 +718,8 @@
     showTyping();
 
     try {
-      const response = await fetch(`${API_BASE}/api/chat`, {
+      // Use streaming endpoint for ChatGPT-style typing effect
+      const response = await fetch(`${API_BASE}/api/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -713,40 +739,129 @@
         throw new Error(`HTTP ${response.status}`);
       }
 
-      const data = await response.json();
       hideTyping();
 
-      sessionId = data.session_id || sessionId;
-      sessionStorage.setItem("chatbot_session", sessionId);
+      // Get the user's question message that was just added (to use for scroll tracking)
+      const userMessages = messagesEl.querySelectorAll('.message.user');
+      const userMessageDiv = userMessages[userMessages.length - 1]; // Last user message
+
+      // Create bot message container for streaming
+      const messageDiv = document.createElement("div");
+      messageDiv.className = "message bot";
+      let shouldAutoScroll = true; // Track if we should keep auto-scrolling
       
-      // Update language if backend changed it
-      if (data.language && data.language !== currentLanguage) {
-        setLanguage(data.language);
-      }
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      
+      const content = document.createElement("div");
+      content.className = "content streaming"; // Add streaming class for cursor effect
+      content.innerHTML = ""; // Will be filled with streamed tokens
+      
+      const timeDiv = document.createElement("div");
+      timeDiv.className = "time";
+      timeDiv.textContent = timestamp();
+      
+      bubble.appendChild(content);
+      bubble.appendChild(timeDiv);
+      messageDiv.appendChild(bubble);
+      messagesEl.appendChild(messageDiv);
+      scrollToBottom();
 
-      addBotMessage(data.reply);
+      // Read streaming response
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let fullReply = "";
+      let sources = [];
+      let intent = "";
+      let hasError = false;
 
-      // Source citations
-      if (data.sources && data.sources.length > 0) {
-        const srcText =
-          "📄 *Sources: " + data.sources.join(", ") + "*";
-        // Small muted source line (append to last bot bubble)
-        const bubbles = messagesEl.querySelectorAll(".message.bot .bubble");
-        if (bubbles.length > 0) {
-          const last = bubbles[bubbles.length - 1];
-          const srcSpan = document.createElement("div");
-          srcSpan.style.cssText =
-            "font-size:10px;color:#888;margin-top:6px;font-style:italic;";
-          srcSpan.textContent = "📄 Sources: " + data.sources.join(", ");
-          last.appendChild(srcSpan);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        
+        // Keep incomplete line in buffer
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              if (data.error) {
+                content.innerHTML = renderMarkdown(`❌ ${data.error}`);
+                content.classList.remove("streaming");
+                hasError = true;
+                break;
+              }
+              
+              if (!data.done && data.token) {
+                // Append token to display
+                fullReply += data.token;
+                content.innerHTML = renderMarkdown(fullReply);
+                
+                // Auto-scroll until user's question reaches viewport top
+                if (shouldAutoScroll) {
+                  if (isMessageTopVisible(userMessageDiv)) {
+                    // User's question has reached viewport top
+                    // Keep it pinned there, don't scroll anymore
+                    shouldAutoScroll = false;
+                  } else {
+                    // User question not at viewport top yet, keep scrolling down
+                    scrollToBottom();
+                  }
+                } else {
+                  // After stopping, keep user question pinned at viewport top
+                  if (userMessageDiv) {
+                    scrollToShowMessage(userMessageDiv);
+                  }
+                }
+              }
+              
+              if (data.done) {
+                // Stream complete - save metadata and remove streaming cursor
+                content.classList.remove("streaming");
+                
+                if (data.session_id) {
+                  sessionId = data.session_id;
+                  sessionStorage.setItem("chatbot_session", sessionId);
+                }
+                if (data.sources) {
+                  sources = data.sources;
+                }
+                if (data.intent) {
+                  intent = data.intent;
+                }
+              }
+            } catch (e) {
+              console.error("Failed to parse SSE data:", e, line);
+            }
+          }
         }
+        
+        // Exit while loop if error occurred
+        if (hasError) break;
       }
+
+      // Add source citations if available
+      if (sources && sources.length > 0) {
+        const srcSpan = document.createElement("div");
+        srcSpan.style.cssText =
+          "font-size:10px;color:#888;margin-top:6px;font-style:italic;";
+        srcSpan.textContent = "📄 Sources: " + sources.join(", ");
+        bubble.appendChild(srcSpan);
+      }
+
     } catch (err) {
       hideTyping();
       console.error("Chat error:", err);
       addBotMessage(t("error_connection"));
     } finally {
       isSending = false;
+      showInputArea();  // Make sure input area is visible
       inputEl.disabled = false;
       sendBtn.disabled = false;
       inputEl.focus();
