@@ -12,9 +12,10 @@ MULTILINGUAL SUPPORT:
 from __future__ import annotations
 
 import logging
+import asyncio
 from dataclasses import dataclass, field
 
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 from pinecone import Pinecone
 
 from app.config import get_settings
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 _openai_client: OpenAI | None = None
+_async_openai_client: AsyncOpenAI | None = None
 _pinecone_index = None
 
 
@@ -31,6 +33,13 @@ def _get_openai() -> OpenAI:
     if _openai_client is None:
         _openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
     return _openai_client
+
+
+def _get_async_openai() -> AsyncOpenAI:
+    global _async_openai_client
+    if _async_openai_client is None:
+        _async_openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    return _async_openai_client
 
 
 def _get_index():
@@ -53,6 +62,25 @@ def _is_non_english(text: str) -> bool:
     if total_chars == 0:
         return False
     return (non_ascii_count / total_chars) > 0.3
+
+
+def _should_translate(query: str) -> bool:
+    """
+    Determine if query should be translated.
+    Skip translation for simple queries (1-2 words) or queries with numbers/ranks.
+    """
+    if not _is_non_english(query):
+        return False
+    
+    # Skip translation for very short queries or queries with numbers
+    word_count = len(query.strip().split())
+    has_numbers = any(char.isdigit() for char in query)
+    
+    # Don't translate single words or queries with numbers (likely rank queries)
+    if word_count <= 2 or has_numbers:
+        return False
+    
+    return True
 
 
 def _translate_to_english(query: str) -> str:
@@ -79,12 +107,43 @@ def _translate_to_english(query: str) -> str:
         )
         
         translation = response.choices[0].message.content.strip()
-        logger.info(f"Translated '{query[:50]}...' to '{translation}'")
+        logger.info(f"Translated '{query[:50]}...' to '{translation[:50]}...'")
         return translation
         
     except Exception as e:
         logger.error(f"Translation failed: {e}")
         # Fallback to original query
+        return query
+
+
+async def _translate_to_english_async(query: str) -> str:
+    """
+    Async version of translation for better performance.
+    """
+    try:
+        client = _get_async_openai()
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Translate the following query to English. Respond with ONLY the English translation, nothing else."
+                },
+                {
+                    "role": "user",
+                    "content": query
+                }
+            ],
+            temperature=0,
+            max_tokens=100,
+        )
+        
+        translation = response.choices[0].message.content.strip()
+        logger.info(f"Translated '{query[:50]}...' to '{translation[:50]}...'")
+        return translation
+        
+    except Exception as e:
+        logger.error(f"Translation failed: {e}")
         return query
 
 
@@ -125,10 +184,9 @@ def retrieve(
     -------
     RetrievalResult with ranked chunks and combined context text.
     """
-    # Translate non-English queries to English for better retrieval
+    # Translate non-English queries to English for better retrieval (optimized)
     search_query = query
-    if _is_non_english(query):
-        logger.info(f"Non-English query detected, translating for retrieval: {query[:50]}...")
+    if _should_translate(query):
         search_query = _translate_to_english(query)
     
     # Embed the query (use translated version if non-English)
@@ -151,30 +209,75 @@ def retrieve(
     # Use attribute access (works with Pinecone client v3+/v4+/v5+)
     matches = getattr(results, "matches", None) or []
 
-    if search_query != query:
-        logger.info(
-            "Pinecone returned %d matches for translated query: '%s' (original: '%s')",
-            len(matches),
-            search_query[:80],
-            query[:80],
+    chunks: list[RetrievedChunk] = []
+    for match in matches:
+        score = getattr(match, "score", 0.0)
+        meta = getattr(match, "metadata", {}) or {}
+
+        if score < score_threshold:
+            continue
+        chunks.append(
+            RetrievedChunk(
+                text=meta.get("text", ""),
+                score=score,
+                source=meta.get("source", "unknown"),
+                year=meta.get("year", 0),
+                filename=meta.get("filename", ""),
+            )
         )
-    else:
-        logger.info(
-            "Pinecone returned %d matches for query: '%s'",
-            len(matches),
-            query[:80],
+
+    # Build combined context
+    context_parts = []
+    for i, chunk in enumerate(chunks, 1):
+        context_parts.append(
+            f"[Source {i}: {chunk.filename} ({chunk.source}, {chunk.year}), "
+            f"relevance: {chunk.score:.2f}]\n{chunk.text}"
         )
+
+    return RetrievalResult(
+        chunks=chunks,
+        context_text="\n\n---\n\n".join(context_parts) if context_parts else "",
+    )
+
+
+async def retrieve_async(
+    query: str,
+    top_k: int = 5,
+    score_threshold: float = 0.25,
+) -> RetrievalResult:
+    """
+    Async version of retrieve for better performance.
+    Runs translation (if needed) and embedding generation efficiently.
+    """
+    # Translate non-English queries (skip for simple queries)
+    search_query = query
+    if _should_translate(query):
+        search_query = await _translate_to_english_async(query)
+    
+    # Embed the query
+    client = _get_async_openai()
+    response = await client.embeddings.create(
+        input=[search_query],
+        model=settings.OPENAI_EMBEDDING_MODEL,
+    )
+    query_embedding = response.data[0].embedding
+
+    # Query Pinecone with MANDATORY college filter
+    index = _get_index()
+    results = index.query(
+        vector=query_embedding,
+        top_k=top_k,
+        include_metadata=True,
+        filter={"college": {"$eq": settings.COLLEGE_SHORT_NAME}},
+    )
+
+    matches = getattr(results, "matches", None) or []
 
     chunks: list[RetrievedChunk] = []
     for match in matches:
         score = getattr(match, "score", 0.0)
         meta = getattr(match, "metadata", {}) or {}
 
-        logger.info(
-            "  Match: score=%.3f, file=%s",
-            score,
-            meta.get("filename", "?"),
-        )
         if score < score_threshold:
             continue
         chunks.append(

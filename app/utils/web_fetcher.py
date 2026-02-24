@@ -60,8 +60,6 @@ def fetch_webpage_content(url: str, timeout: int = 10) -> str:
         }
         req = Request(url, headers=headers)
         
-        logger.info(f"Fetching webpage: {url}")
-        
         # Fetch webpage
         with urlopen(req, timeout=timeout) as response:
             if response.status != 200:
@@ -81,8 +79,6 @@ def fetch_webpage_content(url: str, timeout: int = 10) -> str:
         
         # Remove common footer/header noise patterns
         text_content = re.sub(r'(Home|About|Contact|Login|Sign Up|Privacy Policy)+', ' ', text_content)
-        
-        logger.info(f"Extracted {len(text_content)} characters from webpage")
         
         if not text_content or len(text_content) < 100:
             raise Exception("Insufficient content extracted from webpage")

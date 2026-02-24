@@ -14,25 +14,16 @@ Prerequisites:
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import sys
 import traceback
 from pathlib import Path
 
-logger = logging.getLogger("app.data.init_db")
-logger.info("init_db.py: starting imports...")
-
-logger.info("init_db.py: importing firebase_admin...")
 import firebase_admin
-logger.info("init_db.py: firebase_admin OK")
-
-logger.info("init_db.py: importing firebase_admin.credentials...")
 from firebase_admin import credentials
-logger.info("init_db.py: credentials OK")
-
-logger.info("init_db.py: importing firebase_admin.firestore...")
 from firebase_admin import firestore
-logger.info("init_db.py: firestore OK")
 
 from app.config import get_settings
 
@@ -47,44 +38,52 @@ _db = None
 def _init_firebase():
     """Initialise Firebase Admin SDK (idempotent)."""
     if not firebase_admin._apps:
-        cred_path = Path(settings.FIREBASE_CREDENTIALS_JSON)
-        logger.info(f"Firebase credentials path: {cred_path}")
-        logger.info(f"Firebase credentials file exists: {cred_path.exists()}")
-        if not cred_path.exists():
+        # Try to load credentials from environment variable first
+        creds_json = os.getenv("FIREBASE_CREDENTIALS_JSON_CONTENT")
+        
+        if creds_json:
+            try:
+                creds_dict = json.loads(creds_json)
+                cred = credentials.Certificate(creds_dict)
+                firebase_admin.initialize_app(cred, {
+                    "projectId": settings.FIREBASE_PROJECT_ID,
+                })
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to initialize Firebase from environment variable: {e}")
+                # Fall through to try file-based credentials
+        
+        # Fall back to file-based credentials
+        cred_path = Path(settings.FIREBASE_CREDENTIALS_JSON) if hasattr(settings, 'FIREBASE_CREDENTIALS_JSON') else None
+        if cred_path and cred_path.exists():
+            try:
+                cred = credentials.Certificate(str(cred_path))
+                firebase_admin.initialize_app(cred, {
+                    "projectId": settings.FIREBASE_PROJECT_ID,
+                })
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to initialize Firebase from file: {e}")
+                return False
+        else:
             logger.warning(
-                f"Firebase credentials file not found at {cred_path}. "
+                "Firebase credentials not found in environment variable or file. "
                 "Cutoff queries will not work. RAG queries will still function."
             )
             return False
-        try:
-            logger.info("Loading Firebase credentials...")
-            cred = credentials.Certificate(str(cred_path))
-            logger.info(f"Initialising Firebase app (project={settings.FIREBASE_PROJECT_ID})...")
-            firebase_admin.initialize_app(cred, {
-                "projectId": settings.FIREBASE_PROJECT_ID,
-            })
-            logger.info("Firebase app initialised successfully")
-            return True
-        except Exception as e:
-            logger.warning(f"Failed to initialize Firebase: {e}. Cutoff queries will not work.")
-            return False
-    else:
-        logger.info("Firebase app already initialised, reusing")
-        return True
+    return True
 
 
 def get_db():
     """Return the Firestore client (singleton). Returns None if Firebase is not available."""
     global _db
     if _db is None:
-        logger.info("Creating Firestore client...")
         try:
             success = _init_firebase()
             if not success:
                 logger.warning("Firebase not available. Returning None.")
                 return None
             _db = firestore.client()
-            logger.info("Firestore client created successfully")
         except Exception as e:
             logger.warning(f"Failed to create Firestore client: {e}. Cutoff queries will not work.")
             return None
