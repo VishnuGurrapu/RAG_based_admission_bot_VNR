@@ -7,9 +7,9 @@ NRI (Non-Resident Indian), FN (Foreign National), OCI (Overseas Citizens of Indi
 
 Fee Structure (2025-26) – NRI / FN / OCI / CIWG Quota
 ------------------------------------------------------
-Fees are charged in USD and converted to INR at a fixed rate of $1 = ₹86:
+Fees are charged in USD:
 
-**₹4,30,000 per annum** ($5,000 × ₹86) – for:
+**₹4,30,000 per annum** ( × ₹86) – for:
 - Artificial Intelligence and Data Science (AIDS)
 - Computer Science and Business Systems (CSBS)
 - Computer Science and Engineering (CSE)

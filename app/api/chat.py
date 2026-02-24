@@ -149,6 +149,11 @@ _session_contact_data: dict[str, dict] = {}
 # Stores query awaiting user permission to search website
 _session_pending_websearch: dict[str, str] = {}
 
+# ── Clarification state (per-session) ─────────────────────
+# Stores original query + category when we ask a narrowing question
+# before running RAG/LLM for broad/vague informational topics.
+_session_pending_clarification: dict[str, dict] = {}
+
 # Cutoff flow: only needs branch, category, gender (shows cutoff ranks)
 _CUTOFF_QUESTIONS = [
     ("branch", "Which **branch(es)** are you interested in? You can pick one, multiple (e.g. CSE, ECE, IT), or say **all**.\n\n{branches}"),
@@ -172,6 +177,217 @@ _CONTACT_QUESTIONS = [
     ("programme", "What programme are you interested in?\n\n1️⃣ **B.Tech** (Bachelor of Technology)\n2️⃣ **M.Tech** (Master of Technology)\n3️⃣ **MCA** (Master of Computer Applications)\n\nReply with the number or name."),
     ("query_type", "Thank you! What is this regarding?\n\n1️⃣ Report fraud / unauthorized agent\n2️⃣ General admission inquiry\n3️⃣ Not satisfied with chatbot response\n4️⃣ Other\n\nReply with the number or description."),
 ]
+
+# ── Broad-topic clarification categories ──────────────────────
+# When a user sends a vague/short query matching one of these categories,
+# we ask a menu-style clarifying question BEFORE retrieving any context.
+# This keeps the conversation focused and avoids dumping all information.
+_CLARIFICATION_CATEGORIES: dict[str, dict] = {
+    "fees": {
+        "keywords": ["fee", "fees", "cost", "tuition", "payment", "charges", "installment", "fee structure"],
+        "min_word_count": 1,
+        "exclude_specific": [
+            "hostel fee", "hostel fees", "mess fee", "transport fee",
+            "b.tech fee", "btech fee", "m.tech fee", "mtech fee", "mca fee",
+            "what is the fee", "how much is the fee",
+            "total fee", "annual fee", "semester fee",
+        ],
+        "question": (
+            "I'd be happy to help with fee information! 💰\n\n"
+            "Could you specify which programme?\n\n"
+            "1️⃣ **B.Tech** – Bachelor of Technology (4 years)\n"
+            "2️⃣ **M.Tech** – Master of Technology (2 years)\n"
+            "3️⃣ **MCA** – Master of Computer Applications\n"
+            "4️⃣ **Scholarships / Fee Reimbursement**\n\n"
+            "Reply with the number or programme name."
+        ),
+        "clarified_queries": {
+            "1": "What is the B.Tech fee structure at VNRVJIET?",
+            "b.tech": "What is the B.Tech fee structure at VNRVJIET?",
+            "btech": "What is the B.Tech fee structure at VNRVJIET?",
+            "bachelor": "What is the B.Tech fee structure at VNRVJIET?",
+            "2": "What is the M.Tech fee structure at VNRVJIET?",
+            "m.tech": "What is the M.Tech fee structure at VNRVJIET?",
+            "mtech": "What is the M.Tech fee structure at VNRVJIET?",
+            "master": "What is the M.Tech fee structure at VNRVJIET?",
+            "3": "What is the MCA fee structure at VNRVJIET?",
+            "mca": "What is the MCA fee structure at VNRVJIET?",
+            "4": "What scholarships and fee reimbursement are available at VNRVJIET?",
+            "scholarship": "What scholarships and fee reimbursement are available at VNRVJIET?",
+            "reimbursement": "What scholarships and fee reimbursement are available at VNRVJIET?",
+        },
+    },
+    "placements": {
+        "keywords": [
+            "placement", "placements", "placed", "recruiting",
+            "campus recruitment", "tnp", "t&p", "training and placement",
+            "training & placement", "hiring", "job placement",
+        ],
+        "min_word_count": 1,
+        "exclude_specific": [
+            "highest package", "average package", "top companies", "placement percentage",
+            "placement statistics", "placement record", "how many placed",
+            "which companies", "companies visit", "lpa", "internship", "intern",
+        ],
+        "question": (
+            "Great question about placements! 🎓\n\n"
+            "What specifically would you like to know?\n\n"
+            "1️⃣ **Placement statistics** – percentage of students placed\n"
+            "2️⃣ **Top recruiting companies** – which companies visit campus\n"
+            "3️⃣ **Salary packages** – average and highest CTC\n"
+            "4️⃣ **Internship opportunities** – internship details\n\n"
+            "Reply with the number or topic."
+        ),
+        "clarified_queries": {
+            "1": "What is the placement percentage and statistics at VNRVJIET?",
+            "statistics": "What is the placement percentage and statistics at VNRVJIET?",
+            "percentage": "What is the placement percentage and statistics at VNRVJIET?",
+            "how many": "What is the placement percentage and statistics at VNRVJIET?",
+            "2": "Which are the top recruiting companies at VNRVJIET?",
+            "companies": "Which are the top recruiting companies at VNRVJIET?",
+            "company": "Which are the top recruiting companies at VNRVJIET?",
+            "recruiters": "Which are the top recruiting companies at VNRVJIET?",
+            "3": "What is the average and highest salary package at VNRVJIET placements?",
+            "package": "What is the average and highest salary package at VNRVJIET placements?",
+            "salary": "What is the average and highest salary package at VNRVJIET placements?",
+            "ctc": "What is the average and highest salary package at VNRVJIET placements?",
+            "lpa": "What is the average and highest salary package at VNRVJIET placements?",
+            "4": "What internship opportunities are available at VNRVJIET?",
+            "internship": "What internship opportunities are available at VNRVJIET?",
+            "intern": "What internship opportunities are available at VNRVJIET?",
+        },
+    },
+    "hostel": {
+        "keywords": ["hostel", "accommodation", "boarding", "staying on campus", "dormitory", "on-campus stay"],
+        "min_word_count": 1,
+        "exclude_specific": [
+            "hostel fee", "hostel fees", "hostel cost", "hostel charges",
+            "hostel rules", "hostel facility", "hostel facilities",
+            "boys hostel", "girls hostel", "ladies hostel", "hostel available",
+            "hostel warden", "hostel mess",
+        ],
+        "question": (
+            "I can help with hostel information! 🏨\n\n"
+            "What would you like to know about?\n\n"
+            "1️⃣ **Hostel fees & charges** – annual costs and payment\n"
+            "2️⃣ **Facilities** – rooms, mess, amenities\n"
+            "3️⃣ **Rules & regulations** – hostel policies\n"
+            "4️⃣ **Availability** – seats for boys/girls\n\n"
+            "Reply with the number or topic."
+        ),
+        "clarified_queries": {
+            "1": "What are the hostel fees and charges at VNRVJIET?",
+            "fees": "What are the hostel fees and charges at VNRVJIET?",
+            "fee": "What are the hostel fees and charges at VNRVJIET?",
+            "charges": "What are the hostel fees and charges at VNRVJIET?",
+            "cost": "What are the hostel fees and charges at VNRVJIET?",
+            "2": "What are the hostel facilities at VNRVJIET?",
+            "facilities": "What are the hostel facilities at VNRVJIET?",
+            "facility": "What are the hostel facilities at VNRVJIET?",
+            "amenities": "What are the hostel amenities at VNRVJIET?",
+            "mess": "What are the hostel mess and food facilities at VNRVJIET?",
+            "room": "What types of rooms are available in VNRVJIET hostel?",
+            "3": "What are the hostel rules and regulations at VNRVJIET?",
+            "rules": "What are the hostel rules and regulations at VNRVJIET?",
+            "regulations": "What are the hostel rules and regulations at VNRVJIET?",
+            "4": "What is the hostel seat availability for boys and girls at VNRVJIET?",
+            "availability": "What is the hostel seat availability for boys and girls at VNRVJIET?",
+            "available": "What is the hostel seat availability for boys and girls at VNRVJIET?",
+            "seats": "What is the hostel seat availability for boys and girls at VNRVJIET?",
+            "boys": "What is the boys hostel availability and details at VNRVJIET?",
+            "girls": "What is the girls hostel availability and details at VNRVJIET?",
+        },
+    },
+    "admissions": {
+        "keywords": [
+            "admission process", "how to apply", "how to get admission",
+            "apply to vnrvjiet", "joining process", "admission procedure",
+            "how admissions work", "apply for admission",
+        ],
+        "min_word_count": 3,
+        "exclude_specific": [
+            "lateral entry", "management quota", "nri quota", "cat-a", "cat a",
+            "eapcet", "ecet", "documents required", "eligibility criteria",
+            "admission date", "last date",
+        ],
+        "question": (
+            "Here's what I can help you with regarding admissions! 📋\n\n"
+            "What specifically are you looking for?\n\n"
+            "1️⃣ **Step-by-step process** – how admissions work\n"
+            "2️⃣ **Eligibility criteria** – qualification requirements\n"
+            "3️⃣ **Required documents** – what to bring / submit\n"
+            "4️⃣ **Important dates** – deadlines and schedule\n"
+            "5️⃣ **Special quota** – Management / NRI / Lateral entry\n\n"
+            "Reply with the number or topic."
+        ),
+        "clarified_queries": {
+            "1": "What is the step-by-step admission process at VNRVJIET?",
+            "process": "What is the step-by-step admission process at VNRVJIET?",
+            "steps": "What is the step-by-step admission process at VNRVJIET?",
+            "procedure": "What is the step-by-step admission process at VNRVJIET?",
+            "2": "What are the eligibility criteria for admission to VNRVJIET?",
+            "eligibility": "What are the eligibility criteria for admission to VNRVJIET?",
+            "criteria": "What are the eligibility criteria for admission to VNRVJIET?",
+            "qualification": "What are the eligibility criteria for admission to VNRVJIET?",
+            "3": "What documents are required for admission to VNRVJIET?",
+            "documents": "What documents are required for admission to VNRVJIET?",
+            "document": "What documents are required for admission to VNRVJIET?",
+            "certificate": "What certificates are required for admission to VNRVJIET?",
+            "4": "What are the important admission dates and deadlines at VNRVJIET?",
+            "dates": "What are the important admission dates and deadlines at VNRVJIET?",
+            "date": "What are the important admission dates and deadlines at VNRVJIET?",
+            "deadline": "What are the important admission dates and deadlines at VNRVJIET?",
+            "5": "What is the management quota, NRI quota, and lateral entry admission process at VNRVJIET?",
+            "management": "What is the management quota admission process at VNRVJIET?",
+            "nri": "What is the NRI quota admission process at VNRVJIET?",
+            "lateral": "What is the lateral entry admission process at VNRVJIET?",
+            "quota": "What are the different quota options for admission at VNRVJIET?",
+        },
+    },
+    "campus": {
+        "keywords": [
+            "campus life", "college life", "college facilities",
+            "facilities at vnr", "facilities in college", "what facilities",
+            "college infrastructure",
+        ],
+        "min_word_count": 2,
+        "exclude_specific": [
+            "campus location", "campus address", "how to reach",
+            "labs", "library", "sports", "canteen", "transport", "bus",
+            "hostel", "gym", "club", "department",
+        ],
+        "question": (
+            "I can tell you about our campus! 🏫\n\n"
+            "What aspect are you interested in?\n\n"
+            "1️⃣ **Academic facilities** – labs, library, classrooms\n"
+            "2️⃣ **Sports & recreation** – grounds, gym, student clubs\n"
+            "3️⃣ **Canteen & dining** – food options on campus\n"
+            "4️⃣ **Transport** – college bus routes and services\n"
+            "5️⃣ **General overview** – overall campus information\n\n"
+            "Reply with the number or topic."
+        ),
+        "clarified_queries": {
+            "1": "What are the academic facilities like labs and library at VNRVJIET?",
+            "academic": "What are the academic facilities like labs and library at VNRVJIET?",
+            "lab": "What laboratory facilities are available at VNRVJIET?",
+            "library": "What are the library facilities at VNRVJIET?",
+            "2": "What sports and recreational facilities are available at VNRVJIET?",
+            "sports": "What sports and recreational facilities are available at VNRVJIET?",
+            "gym": "Is there a gym at VNRVJIET?",
+            "clubs": "What student clubs and activities are available at VNRVJIET?",
+            "3": "What are the canteen and food options at VNRVJIET?",
+            "canteen": "What are the canteen and food options at VNRVJIET?",
+            "food": "What are the food options at VNRVJIET?",
+            "4": "What are the transport and bus facilities at VNRVJIET?",
+            "transport": "What are the transport and bus facilities at VNRVJIET?",
+            "bus": "What are the bus routes and transport facilities at VNRVJIET?",
+            "5": "Give me an overview of VNRVJIET campus and facilities.",
+            "general": "Give me an overview of VNRVJIET campus and facilities.",
+            "overview": "Give me an overview of VNRVJIET campus and facilities.",
+        },
+    },
+}
+
 
 def _check_rate_limit(ip: str) -> None:
     now = time.time()
@@ -379,6 +595,63 @@ def _is_no_response(message: str) -> bool:
         "skip", "cancel", "never mind", "nevermind"
     ]
     return any(p in msg_lower for p in no_patterns)
+
+
+def _detect_category_needing_clarification(message: str) -> str | None:
+    """
+    Detect if the user's message is a broad / vague informational query
+    that benefits from a clarifying question before we look up the answer.
+
+    Returns the category key (e.g. 'fees', 'placements') when clarification
+    is needed, or None when the query is already specific enough.
+    """
+    msg_lower = message.lower().strip()
+    word_count = len(msg_lower.split())
+
+    for category, config in _CLARIFICATION_CATEGORIES.items():
+        # Must match at least one keyword for this category
+        if not any(kw in msg_lower for kw in config["keywords"]):
+            continue
+
+        # Skip if the query is already specific (matches an exclude phrase)
+        if any(excl in msg_lower for excl in config.get("exclude_specific", [])):
+            continue
+
+        # If the message is long (10+ words) it's likely already specific
+        if word_count >= 10:
+            continue
+
+        return category
+
+    return None
+
+
+def _resolve_clarification_response(user_reply: str, category: str) -> str | None:
+    """
+    Map the user's answer to a clarifying question to a refined query string.
+    Returns the refined query, or None if the reply doesn't match any option.
+    """
+    config = _CLARIFICATION_CATEGORIES.get(category)
+    if not config:
+        return None
+
+    msg_lower = user_reply.lower().strip()
+    clarified_queries = config["clarified_queries"]
+
+    # 1. Try exact key match
+    if msg_lower in clarified_queries:
+        return clarified_queries[msg_lower]
+
+    # 2. Try substring match (longest key wins to avoid false positives)
+    best_key = max(
+        (k for k in clarified_queries if k in msg_lower),
+        key=len,
+        default=None,
+    )
+    if best_key:
+        return clarified_queries[best_key]
+
+    return None
 
 
 def _build_multi_branch_reply(
@@ -803,6 +1076,75 @@ async def chat(req: ChatRequest, request: Request):
             _session_history[session_id].append({"role": "user", "content": user_msg})
             _session_history[session_id].append({"role": "assistant", "content": reply})
             return ChatResponse(reply=reply, intent="web_search_permission", session_id=session_id, language=current_language)
+
+    # ── Check if session is awaiting a clarifying answer ──────
+    if session_id in _session_pending_clarification:
+        pending = _session_pending_clarification[session_id]
+        original_query = pending["original_query"]
+        category = pending["category"]
+
+        # If user wants to change topic, clear state and fall through
+        if _is_topic_change(user_msg, current_flow="clarification"):
+            logger.info(f"Topic change detected during clarification for session {session_id}")
+            del _session_pending_clarification[session_id]
+            # Fall through to normal processing below
+        else:
+            refined_query = _resolve_clarification_response(user_msg, category)
+
+            if refined_query:
+                del _session_pending_clarification[session_id]
+                logger.info(
+                    f"Clarification resolved for session {session_id}: "
+                    f"'{user_msg}' -> '{refined_query}'"
+                )
+
+                # Retrieve context using the refined (specific) query
+                try:
+                    rag_result = retrieve(refined_query, top_k=8)
+                    clari_context = rag_result.context_text
+                    clari_sources = list({
+                        f"{c.filename} ({c.source})" for c in rag_result.chunks
+                    })
+                except Exception as e:
+                    logger.error("RAG retrieval failed during clarification: %s", e, exc_info=True)
+                    clari_context = ""
+                    clari_sources = []
+
+                history = _session_history.get(session_id, [])
+                clari_reply = _generate_llm_response(
+                    refined_query,
+                    clari_context,
+                    "",
+                    history=history,
+                    session_id=session_id,
+                    language=current_language,
+                )
+
+                _session_history[session_id].append({"role": "user", "content": user_msg})
+                _session_history[session_id].append({"role": "assistant", "content": clari_reply})
+
+                return ChatResponse(
+                    reply=clari_reply,
+                    intent="informational",
+                    session_id=session_id,
+                    sources=clari_sources,
+                    language=current_language,
+                )
+            else:
+                # Response didn't match – ask again with the same menu
+                cat_config = _CLARIFICATION_CATEGORIES.get(category, {})
+                re_ask = (
+                    "I'm not sure I understood that option.\n\n"
+                    + cat_config.get("question", "Could you please be more specific?")
+                )
+                _session_history[session_id].append({"role": "user", "content": user_msg})
+                _session_history[session_id].append({"role": "assistant", "content": re_ask})
+                return ChatResponse(
+                    reply=re_ask,
+                    intent="clarification",
+                    session_id=session_id,
+                    language=current_language,
+                )
 
     # ── Check if session is in contact collection mode ────────
     if session_id in _session_contact_data:
@@ -1421,6 +1763,33 @@ async def chat(req: ChatRequest, request: Request):
 
     # ── RAG path ──────────────────────────────────────────────
     if intent in (IntentType.INFORMATIONAL, IntentType.MIXED):
+        # ── Clarification gate (informational only, no cutoff data yet) ────
+        # For broad/vague topics, ask a narrowing question before retrieving.
+        if intent == IntentType.INFORMATIONAL and not cutoff_info:
+            clari_category = _detect_category_needing_clarification(user_msg)
+            if clari_category:
+                clari_config = _CLARIFICATION_CATEGORIES[clari_category]
+                clari_question = clari_config["question"]
+
+                _session_pending_clarification[session_id] = {
+                    "original_query": user_msg,
+                    "category": clari_category,
+                }
+                logger.info(
+                    f"Clarification triggered for session {session_id}: "
+                    f"category='{clari_category}', query='{user_msg}'"
+                )
+
+                _session_history[session_id].append({"role": "user", "content": user_msg})
+                _session_history[session_id].append({"role": "assistant", "content": clari_question})
+
+                return ChatResponse(
+                    reply=clari_question,
+                    intent="clarification",
+                    session_id=session_id,
+                    language=current_language,
+                )
+
         try:
             rag_result = retrieve(user_msg, top_k=8)  # Increased from 5 to 8 for better coverage of mixed queries (B.Tech + M.Tech)
             rag_context = rag_result.context_text
@@ -1573,6 +1942,10 @@ async def clear_session(req: ChatRequest):
     if session_id in _session_pending_websearch:
         del _session_pending_websearch[session_id]
         cleared.append("pending_websearch")
+    
+    if session_id in _session_pending_clarification:
+        del _session_pending_clarification[session_id]
+        cleared.append("pending_clarification")
     
     if session_id in _session_language:
         del _session_language[session_id]

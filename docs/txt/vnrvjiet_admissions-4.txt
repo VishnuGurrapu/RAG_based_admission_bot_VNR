@@ -5,7 +5,7 @@ About VNRVJIET
 --------------
 VNR Vignana Jyothi Institute of Engineering and Technology (VNRVJIET) is a premier autonomous engineering college located in Bachupally, Hyderabad, Telangana, India. Established in 1995, the college is affiliated to Jawaharlal Nehru Technological University, Hyderabad (JNTUH) and approved by AICTE, New Delhi. The institute was granted autonomous status by UGC in 2009. VNRVJIET is accredited by NAAC with an 'A++' grade and multiple programs are accredited by NBA.
 
-Admission Process
+Admission Process-BTECH
 -----------------
 Admissions to VNRVJIET are conducted through the following modes:
 
@@ -22,7 +22,8 @@ Admissions to VNRVJIET are conducted through the following modes:
 3. **NRI / FN / OCI / CIWG Quota**
    - Limited seats available per branch
    - Eligibility: OCI cardholders, OR children of parents working in GCC countries (Bahrain, Kuwait, Oman, Qatar, Saudi Arabia, UAE) with a valid Visa/Work Permit, OR Foreign Nationals
-   - Fee (2025-26): ₹4,30,000/yr (CSE/ECE/IT/AI branches), ₹3,01,000/yr (Civil/EEE/ME), ₹2,58,000/yr (Auto/EIE)
+   - Fee (2025-26): $5000/yr (CSE/ECE/IT/AI branches), $3500/yr (Civil/EEE/ME), $3000/yr (Auto/EIE)
+   -overall NRI qouta fee strucvture is $3000-$5000 may vary according to the branches
    - Contact admissions office for step-by-step process: admissionsenquiry@vnrvjiet.in | +91-40-2304 2758
    - ⚠️ VNRVJIET does NOT use agents/consultants for NRI/Category-B admissions
 
@@ -50,7 +51,7 @@ Documents Required for Admission
 
 Fee Structure (Approximate for 2025-26)
 ---------------------------------------
-- Convenor Quota: ₹1,35,000 per annum (tuition fee as per Telangana government norms)
+- Convenor Quota: ₹1,35,000 per annum (tuition fee as per Telangana government norms)->For BTech, ₹1,30,000 per year for M.Tech. programmes.
 - Management Quota: ₹2,00,000 to ₹3,50,000 per annum (varies by branch)
 - Hostel Fee: ₹1,35,000 per annum (including mess and laundry)
 - Note: Fee reimbursement available for eligible students under Telangana government schemes
@@ -85,27 +86,27 @@ Hostel Information
 
 
 
-B.Tech. Programmes & Tuition Fee (Per Annum)
+B.Tech. Programmes & Tuition Fee (Per Annum)-NRI Quota
+--------------------------------------------------------
+1. Artificial Intelligence and Data Science (UG-AID) – $5000 per annum
+2. Computer Science and Business System (UG-CSB) – $5000 per annum
+3. Computer Science and Engineering (UG-CSE) – $5000 per annum
+4. CSE – Artificial Intelligence and Machine Learning (UG-CS-AM) – $5000 per annum
+5. CSE – Cyber Security (UG-CS-CyS) – $5000 per annum
+6. CSE – Data Science (UG-CS-DS) – $5000 per annum
+7. CSE – Internet of Things (UG-CS-IoT) – $5000 per annum
+8. Electronics & Communication Engineering (UG-ECE) – $5000 per annum
+9. Information Technology (UG-IT) – $5000 per annum
+10. Electronics Engineering (VLSI Design and Technology) – $5000 per annum
+11. Biotechnology – $5000 per annum
+12. Robotics & Artificial Intelligence – $5000 per annum
+13. Civil Engineering (UG-CE) – $3500 per annum
+14. Electrical and Electronics Engineering (UG-EEE) – $3500 per annum
+15. Mechanical Engineering (UG-ME) – $3500 per annum
+16. Automobile Engineering (UG-AE) – $3000 per annum
+17. Electronics and Instrumentation Engineering (UG-EIE) – $3000 per annum
 
-1. Artificial Intelligence and Data Science (UG-AID) – Rs. 4,30,000 per annum
-2. Computer Science and Business System (UG-CSB) – Rs. 4,30,000 per annum
-3. Computer Science and Engineering (UG-CSE) – Rs. 4,30,000 per annum
-4. CSE – Artificial Intelligence and Machine Learning (UG-CS-AM) – Rs. 4,30,000 per annum
-5. CSE – Cyber Security (UG-CS-CyS) – Rs. 4,30,000 per annum
-6. CSE – Data Science (UG-CS-DS) – Rs. 4,30,000 per annum
-7. CSE – Internet of Things (UG-CS-IoT) – Rs. 4,30,000 per annum
-8. Electronics & Communication Engineering (UG-ECE) – Rs. 4,30,000 per annum
-9. Information Technology (UG-IT) – Rs. 4,30,000 per annum
-10. Electronics Engineering (VLSI Design and Technology) – Rs. 4,30,000 per annum
-11. Biotechnology – Rs. 4,30,000 per annum
-12. Robotics & Artificial Intelligence – Rs. 4,30,000 per annum
-13. Civil Engineering (UG-CE) – Rs. 3,01,000 per annum
-14. Electrical and Electronics Engineering (UG-EEE) – Rs. 3,01,000 per annum
-15. Mechanical Engineering (UG-ME) – Rs. 3,01,000 per annum
-16. Automobile Engineering (UG-AE) – Rs. 2,58,000 per annum
-17. Electronics and Instrumentation Engineering (UG-EIE) – Rs. 2,58,000 per annum
-
-Fee Conversion Reference:
+Fee Conversion Reference:(may vary as academic year changes and for each branch also)
 $5000 × 86 = Rs. 4,30,000 per annum
 $3500 × 86 = Rs. 3,01,000 per annum
 $3000 × 86 = Rs. 2,58,000 per annum
@@ -137,13 +138,6 @@ Stay connected with VNRVJIET through our official social media channels:
 - 💼 LinkedIn: https://www.linkedin.com/school/vnrvjiet
 
 Follow us for latest updates on admissions, events, placements, campus life, and important announcements.
-
-Important Dates (2025-26 Admission Cycle)
------------------------------------------
-- TS EAMCET 2025: May 2025 (tentative)
-- Counselling: July-August 2025 (tentative)
-- Classes commence: August-September 2025
-- Management Quota applications: June 2025 onwards
 
 Frequently Asked Questions
 --------------------------
