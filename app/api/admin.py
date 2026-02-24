@@ -51,7 +51,46 @@ async def view_contacts(
     
     service = ContactRequestService()
     requests = service.get_all_requests(status=status)
-    
+
+    # Pre-build table content to avoid nested f-string issues in Python 3.10
+    if requests:
+        rows_html = ""
+        for r in requests:
+            msg = r.get('message', 'N/A')
+            msg_preview = msg[:100] + ("..." if len(msg) > 100 else "")
+            query_type = r.get('query_type', 'other')
+            fraud_class = 'fraud-report' if query_type == 'fraud_report' else ''
+            query_type_display = query_type.replace('_', ' ').title()
+            r_status = r.get('status', 'pending')
+            rows_html += (
+                "<tr>"
+                f"<td>{r.get('timestamp', 'N/A')}</td>"
+                f"<td><strong>{r.get('name', 'N/A')}</strong></td>"
+                f"<td><a href=\"mailto:{r.get('email', '')}\">{r.get('email', 'N/A')}</a></td>"
+                f"<td><a href=\"tel:{r.get('phone', '')}\">{r.get('phone', 'N/A')}</a></td>"
+                f"<td><span class=\"query-type {fraud_class}\">{query_type_display}</span></td>"
+                f"<td>{msg_preview}</td>"
+                f"<td><span class=\"status status-{r_status}\">{r_status.title()}</span></td>"
+                "</tr>"
+            )
+        content_section = (
+            "<table>"
+            "<thead><tr>"
+            "<th>Timestamp</th><th>Name</th><th>Email</th><th>Phone</th>"
+            "<th>Type</th><th>Message</th><th>Status</th>"
+            "</tr></thead>"
+            f"<tbody>{rows_html}</tbody>"
+            "</table>"
+        )
+    else:
+        content_section = (
+            '<div class="no-data">'
+            '<div class="empty-icon">&#x1F4ED;</div>'
+            "<h3>No contact requests found</h3>"
+            "<p>Contact requests will appear here when students request to speak with admission department.</p>"
+            "</div>"
+        )
+
     # Generate HTML
     html = f"""
     <!DOCTYPE html>
@@ -256,40 +295,7 @@ async def view_contacts(
                 <a href="/admin/contacts/export?password={password}" class="btn btn-export">📥 Export CSV</a>
             </div>
             
-            {"".join([f'''
-            <table>
-                <thead>
-                    <tr>
-                        <th>Timestamp</th>
-                        <th>Name</th>
-                        <th>Email</th>
-                        <th>Phone</th>
-                        <th>Type</th>
-                        <th>Message</th>
-                        <th>Status</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {"".join([f"""
-                    <tr>
-                        <td>{r.get('timestamp', 'N/A')}</td>
-                        <td><strong>{r.get('name', 'N/A')}</strong></td>
-                        <td><a href="mailto:{r.get('email', '')}">{r.get('email', 'N/A')}</a></td>
-                        <td><a href="tel:{r.get('phone', '')}">{r.get('phone', 'N/A')}</a></td>
-                        <td><span class="query-type {('fraud-report' if r.get('query_type') == 'fraud_report' else '')}">{r.get('query_type', 'other').replace('_', ' ').title()}</span></td>
-                        <td>{r.get('message', 'N/A')[:100]}{"..." if len(r.get('message', '')) > 100 else ""}</td>
-                        <td><span class="status status-{r.get('status', 'pending')}">{r.get('status', 'pending').title()}</span></td>
-                    </tr>
-                    """ for r in requests])}
-                </tbody>
-            </table>
-            ''' if requests else '''
-            <div class="no-data">
-                <div class="empty-icon">📭</div>
-                <h3>No contact requests found</h3>
-                <p>Contact requests will appear here when students request to speak with admission department.</p>
-            </div>
-            '''])}
+            {content_section}
         </div>
     </body>
     </html>
