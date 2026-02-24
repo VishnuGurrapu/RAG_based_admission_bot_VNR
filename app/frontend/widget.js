@@ -154,6 +154,55 @@
       mr: "🌐 भाषा बदला",
       kn: "🌐 ಭಾಷೆಯನ್ನು ಬದಲಿಸಿ",
     },
+    // ── Admission guided-flow translations ──────────────────────
+    admission_sub_prompt: {
+      en: "Would you like to know about the **Admission Process** or **Eligibility Criteria**?",
+      hi: "क्या आप **प्रवेश प्रक्रिया** या **पात्रता मानदंड** के बारे में जानना चाहते हैं?",
+      te: "మీరు **ప్రవేశ ప్రక్రియ** లేదా **అర్హత ప్రమాణాల** గురించి తెలుసుకోవాలనుకుంటున్నారా?",
+      ta: "**சேர்க்கை செயல்முறை** அல்லது **தகுதி அளவுகோல்கள்** பற்றி தெரிந்துகொள்ள விரும்புகிறீர்களா?",
+      mr: "तुम्हाला **प्रवेश प्रक्रिया** किंवा **पात्रता निकष** बद्दल जाणून घ्यायचे आहे का?",
+      kn: "ನೀವು **ಪ್ರವೇಶ ಪ್ರಕ್ರಿಯೆ** ಅಥವಾ **ಅರ್ಹತೆ ಮಾನದಂಡಗಳ** ಬಗ್ಗೆ ತಿಳಿದುಕೊಳ್ಳಲು ಬಯಸುತ್ತೀರಾ?",
+    },
+    admission_type_process: {
+      en: "Admission Process",
+      hi: "प्रवेश प्रक्रिया",
+      te: "ప్రవేశ ప్రక్రియ",
+      ta: "சேர்க்கை செயல்முறை",
+      mr: "प्रवेश प्रक्रिया",
+      kn: "ಪ್ರವೇಶ ಪ್ರಕ್ರಿಯೆ",
+    },
+    admission_type_eligibility: {
+      en: "Eligibility Criteria",
+      hi: "पात्रता मानदंड",
+      te: "అర్హత ప్రమాణాలు",
+      ta: "தகுதி அளவுகோல்கள்",
+      mr: "पात्रता निकष",
+      kn: "ಅರ್ಹತೆ ಮಾನದಂಡಗಳು",
+    },
+    admission_program_prompt: {
+      en: "Which program are you interested in?",
+      hi: "आप किस कार्यक्रम में रुचि रखते हैं?",
+      te: "మీకు ఏ ప్రోగ్రామ్‌పై ఆసక్తి ఉంది?",
+      ta: "நீங்கள் எந்த திட்டத்தில் ஆர்வமாக உள்ளீர்கள்?",
+      mr: "तुम्हाला कोणत्या कार्यक्रमात रस आहे?",
+      kn: "ನೀವು ಯಾವ ಕಾರ್ಯಕ್ರಮದಲ್ಲಿ ಆಸಕ್ತಿ ಹೊಂದಿದ್ದೀರಿ?",
+    },
+    admission_query_process: {
+      en: "What is the {program} admission process at VNRVJIET?",
+      hi: "VNRVJIET में {program} प्रवेश प्रक्रिया क्या है?",
+      te: "VNRVJIET లో {program} ప్రవేశ ప్రక్రియ ఏమిటి?",
+      ta: "VNRVJIET இல் {program} சேர்க்கை செயல்முறை என்ன?",
+      mr: "VNRVJIET मध्ये {program} प्रवेश प्रक्रिया काय आहे?",
+      kn: "VNRVJIET ನಲ್ಲಿ {program} ಪ್ರವೇಶ ಪ್ರಕ್ರಿಯೆ ಏನು?",
+    },
+    admission_query_eligibility: {
+      en: "What are the {program} eligibility criteria at VNRVJIET?",
+      hi: "VNRVJIET में {program} पात्रता मानदंड क्या हैं?",
+      te: "VNRVJIET లో {program} అర్హత ప్రమాణాలు ఏమిటి?",
+      ta: "VNRVJIET இல் {program} தகுதி அளவுகோல்கள் என்ன?",
+      mr: "VNRVJIET मध्ये {program} पात्रता निकष काय आहेत?",
+      kn: "VNRVJIET ನಲ್ಲಿ {program} ಅರ್ಹತೆ ಮಾನದಂಡಗಳು ಯಾವುವು?",
+    },
   };
 
   function t(key) {
@@ -474,8 +523,12 @@
         e.stopPropagation();
         wrapper.remove();
         addUserMessage(cat);
-        // Send the query (skip adding user message since we already added it above)
-        sendMessage(cat, true);
+        if (i === 0) {
+          // Step 1 of guided admission flow instead of dumping all info at once
+          showAdmissionTypeMenu();
+        } else {
+          sendMessage(cat, true);
+        }
       });
       grid.appendChild(btn);
     });
@@ -500,6 +553,71 @@
     grid.appendChild(othersBtn);
 
     wrapper.appendChild(grid);
+    messagesEl.appendChild(wrapper);
+    scrollToBottom();
+  }
+
+  /**
+   * Guided admission flow – Step 1
+   * Ask the user whether they want Admission Process or Eligibility Criteria.
+   */
+  function showAdmissionTypeMenu() {
+    addBotMessage(t("admission_sub_prompt"));
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "message bot";
+
+    const qr = document.createElement("div");
+    qr.className = "quick-replies";
+
+    ["admission_type_process", "admission_type_eligibility"].forEach((key) => {
+      const btn = document.createElement("button");
+      btn.textContent = t(key);
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        wrapper.remove();
+        addUserMessage(t(key));
+        showProgramMenu(key);
+      });
+      qr.appendChild(btn);
+    });
+
+    wrapper.appendChild(qr);
+    messagesEl.appendChild(wrapper);
+    scrollToBottom();
+  }
+
+  /**
+   * Guided admission flow – Step 2
+   * Ask which program (B.Tech / M.Tech / MCA) then send the composed query.
+   */
+  function showProgramMenu(admissionTypeKey) {
+    addBotMessage(t("admission_program_prompt"));
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "message bot";
+
+    const qr = document.createElement("div");
+    qr.className = "quick-replies";
+
+    ["B.Tech", "M.Tech", "MCA"].forEach((program) => {
+      const btn = document.createElement("button");
+      btn.textContent = program;
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        wrapper.remove();
+        addUserMessage(program);
+        // Compose the specific query and send it to the backend
+        const queryKey = admissionTypeKey === "admission_type_process"
+          ? "admission_query_process"
+          : "admission_query_eligibility";
+        const query = t(queryKey).replace("{program}", program);
+        sendMessage(query, true);
+      });
+      qr.appendChild(btn);
+    });
+
+    wrapper.appendChild(qr);
     messagesEl.appendChild(wrapper);
     scrollToBottom();
   }

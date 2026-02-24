@@ -47,6 +47,7 @@ except Exception as e:
 @dataclass
 class CutoffResult:
     eligible: Optional[bool] = None
+    found: Optional[bool] = None
     cutoff_rank: Optional[int] = None
     branch: Optional[str] = None
     category: Optional[str] = None
