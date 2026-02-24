@@ -110,6 +110,12 @@ _session_pending_clarification: dict[str, dict] = {}
 # Implements 2-layer guided flow: Course → Category → RAG
 _session_pending_document_flow: dict[str, dict] = {}
 
+# ── Fee flow state (per-session) ──────────────────────────
+# Stores course, category, and fee type selection for fee structure queries
+# Implements 2-3 layer guided flow: Course → Category → [Fee Type] → RAG
+# This executes BEFORE clarification and RAG to provide focused results
+_session_pending_fee_flow: dict[str, dict] = {}
+
 # Document flow questions (2-layer: course → category)
 _DOCUMENT_FLOW_QUESTIONS = {
     "course": {
@@ -205,6 +211,125 @@ _DOCUMENT_FLOW_QUESTIONS = {
                 "2": "Management Quota",
                 "management": "Management Quota",
             }
+        }
+    }
+}
+
+# Fee flow questions (2-3 layers: course → category → [fee_type if unclear])
+_FEE_FLOW_QUESTIONS = {
+    "course": {
+        "question": (
+            "I'd be happy to help with fee information! 💰\n\n"
+            "For which course are you applying?\n\n"
+            "1️⃣ **B.Tech** (Bachelor of Technology)\n"
+            "2️⃣ **M.Tech** (Master of Technology)\n"
+            "3️⃣ **MCA** (Master of Computer Applications)\n\n"
+            "Reply with the number or course name."
+        ),
+        "options": {
+            "1": "B.Tech",
+            "b.tech": "B.Tech",
+            "btech": "B.Tech",
+            "bachelor": "B.Tech",
+            "2": "M.Tech",
+            "m.tech": "M.Tech",
+            "mtech": "M.Tech",
+            "master": "M.Tech",
+            "3": "MCA",
+            "mca": "MCA",
+        }
+    },
+    "category": {
+        "B.Tech": {
+            "question": (
+                "Under which admission category? 📋\n\n"
+                "1️⃣ **Category A – Convenor Quota** (TG-EAPCET Rank)\n"
+                "2️⃣ **Category B – JEE Mains**\n"
+                "3️⃣ **NRI / NRI Sponsored**\n"
+                "4️⃣ **Management Quota**\n\n"
+                "Reply with the number or category name."
+            ),
+            "options": {
+                "1": "Category A",
+                "category a": "Category A",
+                "cat-a": "Category A",
+                "cat a": "Category A",
+                "convenor": "Category A",
+                "eapcet": "Category A",
+                "2": "Category B",
+                "category b": "Category B",
+                "cat-b": "Category B",
+                "cat b": "Category B",
+                "jee": "Category B",
+                "jee mains": "Category B",
+                "3": "NRI",
+                "nri": "NRI",
+                "nri sponsored": "NRI",
+                "4": "Management",
+                "management": "Management",
+            }
+        },
+        "M.Tech": {
+            "question": (
+                "Under which admission category? 📋\n\n"
+                "1️⃣ **PGECET** (Convenor Quota)\n"
+                "2️⃣ **GATE** Score Based\n"
+                "3️⃣ **Management Quota**\n\n"
+                "Reply with the number or category name."
+            ),
+            "options": {
+                "1": "PGECET",
+                "pgecet": "PGECET",
+                "convenor": "PGECET",
+                "category a": "PGECET",
+                "2": "GATE",
+                "gate": "GATE",
+                "category b": "GATE",
+                "3": "Management",
+                "management": "Management",
+            }
+        },
+        "MCA": {
+            "question": (
+                "Under which admission category? 📋\n\n"
+                "1️⃣ **ICET** (Convenor Quota)\n"
+                "2️⃣ **Management Quota**\n\n"
+                "Reply with the number or category name."
+            ),
+            "options": {
+                "1": "ICET",
+                "icet": "ICET",
+                "convenor": "ICET",
+                "category a": "ICET",
+                "2": "Management",
+                "management": "Management",
+            }
+        }
+    },
+    "fee_type": {
+        "question": (
+            "What specific information are you looking for? 💡\n\n"
+            "1️⃣ **Tuition Fees** – yearly/semester breakdown\n"
+            "2️⃣ **Scholarships** – fee reimbursement & financial aid\n"
+            "3️⃣ **Complete Fee Structure** – all fees including tuition\n\n"
+            "Reply with the number or what you need."
+        ),
+        "options": {
+            "1": "tuition fees",
+            "tuition": "tuition fees",
+            "tuition fee": "tuition fees",
+            "course fee": "tuition fees",
+            "academic fee": "tuition fees",
+            "2": "scholarships",
+            "scholarship": "scholarships",
+            "reimbursement": "scholarships",
+            "fee reimbursement": "scholarships",
+            "financial aid": "scholarships",
+            "3": "complete fee structure",
+            "all fees": "complete fee structure",
+            "total fee": "complete fee structure",
+            "complete": "complete fee structure",
+            "full": "complete fee structure",
         }
     }
 }
@@ -530,7 +655,7 @@ def _is_topic_change(message: str, current_flow: str = None) -> bool:
     
     Args:
         message: User's message
-        current_flow: Current collection mode ("cutoff", "eligibility", "contact_request", "document_flow", or None)
+        current_flow: Current collection mode ("cutoff", "eligibility", "contact_request", "document_flow", "fee_flow", or None)
     """
     msg_lower = message.lower().strip()
     
@@ -582,6 +707,17 @@ def _is_topic_change(message: str, current_flow: str = None) -> bool:
             "hostel", "fee", "campus", "faculty"
         ]
         if any(kw in msg_lower for kw in unrelated_keywords):
+            return True
+    
+    # If in fee flow, detect if asking something unrelated to fees/scholarships
+    if current_flow == "fee_flow":
+        unrelated_keywords = [
+            "cutoff", "rank", "eligible", "placement", "package",
+            "hostel", "campus", "faculty", "document", "certificate",
+            "admission process", "how to apply"
+        ]
+        # Exclude scholarship/reimbursement keywords as they're fee-related
+        if any(kw in msg_lower for kw in unrelated_keywords) and "scholarship" not in msg_lower and "reimbursement" not in msg_lower:
             return True
     
     # Check if message is a full question (has question words + multiple words)
@@ -832,6 +968,165 @@ def _resolve_category_response(user_reply: str, course: str) -> str | None:
     
     msg_lower = user_reply.lower().strip()
     options = _DOCUMENT_FLOW_QUESTIONS["category"][course]["options"]
+    
+    # Try exact match
+    if msg_lower in options:
+        return options[msg_lower]
+    
+    # Try substring match (longest first)
+    for key in sorted(options.keys(), key=len, reverse=True):
+        if key in msg_lower:
+            return options[key]
+    
+    return None
+
+
+# ═══════════════════════════════════════════════════════════
+# Fee Flow Helper Functions
+# ═══════════════════════════════════════════════════════════
+
+def _detect_fee_query(message: str) -> bool:
+    """
+    Detect if query is about fee structure or scholarships.
+    
+    This function identifies queries that should trigger the fee flow
+    before clarification and RAG systems are engaged.
+    """
+    msg_lower = message.lower().strip()
+    
+    # Primary fee keywords
+    fee_keywords = [
+        "fee structure", "fees", "fee", "cost", "tuition", "tuition fee",
+        "course fee", "academic fee", "fee details", "fee information",
+        "how much", "total fee", "annual fee", "semester fee",
+        "pay", "payment", "charges", "fee breakdown",
+    ]
+    
+    # Scholarship keywords
+    scholarship_keywords = [
+        "scholarship", "scholarships", "reimbursement", "fee reimbursement",
+        "financial aid", "fee waiver", "concession",
+    ]
+    
+    # Check if message matches fee or scholarship keywords
+    has_fee_keyword = any(kw in msg_lower for kw in fee_keywords)
+    has_scholarship_keyword = any(kw in msg_lower for kw in scholarship_keywords)
+    
+    # Exclude if it's specifically about hostel or mess fees (different category)
+    exclude_keywords = ["hostel fee", "mess fee", "transport fee"]
+    is_excluded = any(kw in msg_lower for kw in exclude_keywords)
+    
+    return (has_fee_keyword or has_scholarship_keyword) and not is_excluded
+
+
+def _extract_fee_category_from_message(message: str, course: str) -> str | None:
+    """
+    Extract admission category from message for fee queries.
+    Uses a simplified mapping compared to document flow.
+    """
+    msg_lower = message.lower().strip()
+    
+    if course not in _FEE_FLOW_QUESTIONS["category"]:
+        return None
+    
+    options = _FEE_FLOW_QUESTIONS["category"][course]["options"]
+    
+    # Try longest match first to avoid false positives
+    for key in sorted(options.keys(), key=len, reverse=True):
+        if key in msg_lower:
+            return options[key]
+    
+    return None
+
+
+def _extract_fee_type_from_message(message: str) -> str | None:
+    """
+    Extract specific fee type from message (tuition, scholarship, etc.).
+    Returns None if not clearly specified.
+    """
+    msg_lower = message.lower().strip()
+    
+    # Check for explicit fee type mentions
+    if any(kw in msg_lower for kw in ["scholarship", "reimbursement", "financial aid"]):
+        return "scholarships"
+    
+    if any(kw in msg_lower for kw in ["tuition fee", "tuition", "course fee", "academic fee"]):
+        return "tuition fees"
+    
+    if any(kw in msg_lower for kw in ["hostel fee", "hostel"]):
+        return "hostel fees"
+    
+    if any(kw in msg_lower for kw in ["complete", "all fees", "total fee", "full fee"]):
+        return "complete fee structure"
+    
+    # If query is very specific, consider fee type clear
+    # e.g., "What is the B.Tech fee?" - we know user wants tuition
+    if any(kw in msg_lower for kw in ["what is the", "tell me the", "how much is"]):
+        return "tuition fees"
+    
+    return None
+
+
+def _is_fee_type_clear_from_query(message: str) -> bool:
+    """
+    Determine if the query clearly indicates what fee information is needed.
+    If clear, we can skip the fee_type layer.
+    """
+    msg_lower = message.lower().strip()
+    
+    # Clear indicators
+    clear_indicators = [
+        "scholarship", "reimbursement", "financial aid",
+        "tuition fee", "tuition", "course fee",
+        "hostel fee", "hostel",
+        "complete fee", "all fees", "total fee",
+        "fee structure", "fee details",
+    ]
+    
+    return any(indicator in msg_lower for indicator in clear_indicators)
+
+
+def _resolve_fee_course_response(user_reply: str) -> str | None:
+    """Map user's course selection for fee flow to standard course name."""
+    msg_lower = user_reply.lower().strip()
+    options = _FEE_FLOW_QUESTIONS["course"]["options"]
+    
+    # Try exact match
+    if msg_lower in options:
+        return options[msg_lower]
+    
+    # Try substring match
+    for key, value in options.items():
+        if key in msg_lower:
+            return value
+    
+    return None
+
+
+def _resolve_fee_category_response(user_reply: str, course: str) -> str | None:
+    """Map user's category selection for fee flow to standard category name."""
+    if course not in _FEE_FLOW_QUESTIONS["category"]:
+        return None
+    
+    msg_lower = user_reply.lower().strip()
+    options = _FEE_FLOW_QUESTIONS["category"][course]["options"]
+    
+    # Try exact match
+    if msg_lower in options:
+        return options[msg_lower]
+    
+    # Try substring match (longest first)
+    for key in sorted(options.keys(), key=len, reverse=True):
+        if key in msg_lower:
+            return options[key]
+    
+    return None
+
+
+def _resolve_fee_type_response(user_reply: str) -> str | None:
+    """Map user's fee type selection to standard fee type."""
+    msg_lower = user_reply.lower().strip()
+    options = _FEE_FLOW_QUESTIONS["fee_type"]["options"]
     
     # Try exact match
     if msg_lower in options:
@@ -1276,7 +1571,307 @@ async def chat_stream(req: ChatRequest, request: Request):
     async def generate():
         try:
             # ═══════════════════════════════════════════════════════════
-            # PRIORITY 1: Check if session is in document flow (HIGHEST PRIORITY)
+            # PRIORITY 0: Check if session is in fee flow (HIGHEST PRIORITY)
+            # This must execute BEFORE document flow, intent classification, and RAG
+            # Provides focused, layered guidance for fee structure queries
+            # ═══════════════════════════════════════════════════════════
+            if session_id in _session_pending_fee_flow:
+                pending = _session_pending_fee_flow[session_id]
+                waiting_for = pending.get("_waiting_for")
+                
+                # Check for topic change
+                if _is_topic_change(user_msg, current_flow="fee_flow"):
+                    logger.info(f"Topic change detected during fee flow for session {session_id}")
+                    del _session_pending_fee_flow[session_id]
+                    # Fall through to normal processing below
+                else:
+                    # Continue fee flow - handle course/category/fee_type collection
+                    if waiting_for == "course":
+                        course = _resolve_fee_course_response(user_msg)
+                        if course:
+                            pending["course"] = course
+                            pending["_waiting_for"] = "category"
+                            
+                            # Ask for category based on course
+                            category_config = _FEE_FLOW_QUESTIONS["category"].get(course)
+                            if category_config:
+                                ask = category_config["question"]
+                                
+                                # Stream the question
+                                words = ask.split()
+                                for word in words:
+                                    yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                                    await asyncio.sleep(0.02)
+                                yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id})}\n\n"
+                                
+                                _session_history[session_id].append({"role": "user", "content": user_msg})
+                                _session_history[session_id].append({"role": "assistant", "content": ask})
+                                return
+                        else:
+                            # Invalid course response
+                            ask = (
+                                "I didn't understand that. Please choose one:\n\n"
+                                + _FEE_FLOW_QUESTIONS["course"]["question"]
+                            )
+                            words = ask.split()
+                            for word in words:
+                                yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                                await asyncio.sleep(0.02)
+                            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id})}\n\n"
+                            
+                            _session_history[session_id].append({"role": "user", "content": user_msg})
+                            _session_history[session_id].append({"role": "assistant", "content": ask})
+                            return
+                    
+                    elif waiting_for == "category":
+                        course = pending.get("course")
+                        category = _resolve_fee_category_response(user_msg, course)
+                        
+                        if category:
+                            pending["category"] = category
+                            
+                            # Check if fee type is needed
+                            # Skip if query already clearly indicates fee type
+                            fee_type_from_original = pending.get("_original_fee_type")
+                            if fee_type_from_original:
+                                # Fee type was already clear from original query
+                                pending["fee_type"] = fee_type_from_original
+                                # Complete flow - construct refined query
+                                del _session_pending_fee_flow[session_id]
+                                
+                                refined_query = f"{pending['fee_type']} for {course} {category} at VNRVJIET"
+                                logger.info(
+                                    f"Fee flow completed for session {session_id}: "
+                                    f"course={course}, category={category}, fee_type={pending['fee_type']}"
+                                )
+                                
+                                # Fall through to RAG retrieval below
+                                # Set a flag to use refined query
+                                user_msg_override = refined_query
+                            else:
+                                # Ask for fee type
+                                pending["_waiting_for"] = "fee_type"
+                                ask = _FEE_FLOW_QUESTIONS["fee_type"]["question"]
+                                
+                                # Stream the question
+                                words = ask.split()
+                                for word in words:
+                                    yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                                    await asyncio.sleep(0.02)
+                                yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id})}\n\n"
+                                
+                                _session_history[session_id].append({"role": "user", "content": user_msg})
+                                _session_history[session_id].append({"role": "assistant", "content": ask})
+                                return
+                        else:
+                            # Invalid category response
+                            category_config = _FEE_FLOW_QUESTIONS["category"].get(course)
+                            ask = (
+                                "I didn't understand that. Please choose one:\n\n"
+                                + (category_config["question"] if category_config else "Please specify the admission category.")
+                            )
+                            words = ask.split()
+                            for word in words:
+                                yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                                await asyncio.sleep(0.02)
+                            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id})}\n\n"
+                            
+                            _session_history[session_id].append({"role": "user", "content": user_msg})
+                            _session_history[session_id].append({"role": "assistant", "content": ask})
+                            return
+                    
+                    elif waiting_for == "fee_type":
+                        fee_type = _resolve_fee_type_response(user_msg)
+                        
+                        if fee_type:
+                            # All info collected - construct refined query
+                            pending["fee_type"] = fee_type
+                            del _session_pending_fee_flow[session_id]
+                            
+                            course = pending["course"]
+                            category = pending["category"]
+                            refined_query = f"{fee_type} for {course} {category} at VNRVJIET"
+                            
+                            logger.info(
+                                f"Fee flow completed for session {session_id}: "
+                                f"course={course}, category={category}, fee_type={fee_type}"
+                            )
+                            
+                            # Fall through to RAG below - set override
+                            user_msg_override = refined_query
+                        else:
+                            # Invalid fee type response
+                            ask = (
+                                "I didn't understand that. Please choose one:\n\n"
+                                + _FEE_FLOW_QUESTIONS["fee_type"]["question"]
+                            )
+                            words = ask.split()
+                            for word in words:
+                                yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                                await asyncio.sleep(0.02)
+                            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id})}\n\n"
+                            
+                            _session_history[session_id].append({"role": "user", "content": user_msg})
+                            _session_history[session_id].append({"role": "assistant", "content": ask})
+                            return
+                
+                # If we reach here with user_msg_override set, proceed to RAG
+                if 'user_msg_override' in locals():
+                    # Retrieve context using refined query
+                    try:
+                        rag_result = await retrieve_async(user_msg_override, top_k=8)
+                        fee_context = rag_result.context_text
+                        fee_sources = list({
+                            f"{c.filename} ({c.source})" for c in rag_result.chunks
+                        })
+                    except Exception as e:
+                        logger.error("RAG retrieval failed during fee flow: %s", e, exc_info=True)
+                        fee_context = ""
+                        fee_sources = []
+                    
+                    # Stream LLM response with fee context
+                    system = _get_system_prompt()
+                    lang_instruction = get_language_instruction(current_language)
+                    system_with_lang = f"{system}\n\n**IMPORTANT: {lang_instruction}**"
+                    
+                    user_content = f"User question: {user_msg_override}\n\n--- Context ---\n{fee_context}"
+                    
+                    history = _session_history.get(session_id, [])
+                    trimmed_history = history[-MAX_HISTORY:] if history else []
+                    
+                    messages = [{"role": "system", "content": system_with_lang}]
+                    messages.extend(trimmed_history)
+                    messages.append({"role": "user", "content": user_content})
+                    
+                    # Stream from OpenAI
+                    client = _get_async_openai()
+                    stream = await client.chat.completions.create(
+                        model=settings.OPENAI_MODEL,
+                        messages=messages,
+                        temperature=0.3,
+                        max_tokens=600,
+                        stream=True,
+                    )
+                    
+                    full_reply = ""
+                    async for chunk in stream:
+                        if chunk.choices[0].delta.content:
+                            token = chunk.choices[0].delta.content
+                            full_reply += token
+                            yield f"data: {json.dumps({'token': token, 'done': False})}\n\n"
+                    
+                    # Send completion signal with metadata
+                    yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'informational', 'sources': fee_sources, 'session_id': session_id})}\n\n"
+                    
+                    # Update history
+                    _session_history[session_id].append({"role": "user", "content": user_msg})
+                    _session_history[session_id].append({"role": "assistant", "content": full_reply})
+                    return
+            
+            # ═══════════════════════════════════════════════════════════
+            # PRIORITY 1: Detect NEW fee query (before document flow)
+            # Start fee flow if query is about fees/scholarships
+            # ═══════════════════════════════════════════════════════════
+            if _detect_fee_query(user_msg):
+                # Check if user already provided course and/or category
+                detected_course = _extract_course_from_message(user_msg)
+                detected_category = None
+                if detected_course:
+                    detected_category = _extract_fee_category_from_message(user_msg, detected_course)
+                
+                # Check if fee type is clear from query
+                detected_fee_type = _extract_fee_type_from_message(user_msg)
+                
+                # Smart flow: skip layers if info is already provided
+                if detected_course and detected_category and detected_fee_type:
+                    # User provided everything - construct refined query and go to RAG
+                    refined_query = f"{detected_fee_type} for {detected_course} {detected_category} at VNRVJIET"
+                    logger.info(
+                        f"Fee query with all details: "
+                        f"course={detected_course}, category={detected_category}, fee_type={detected_fee_type}"
+                    )
+                    # Set override to use refined query
+                    user_msg_override = refined_query
+                    # Continue to normal flow with override
+                elif detected_course and detected_category:
+                    # Has course and category but no fee type
+                    # Check if fee type is implicitly clear
+                    if _is_fee_type_clear_from_query(user_msg):
+                        # Fee type is clear enough - continue to RAG
+                        fee_type_inferred = detected_fee_type or "fee structure"
+                        refined_query = f"{fee_type_inferred} for {detected_course} {detected_category} at VNRVJIET"
+                        logger.info(f"Fee query with inferred fee type: {refined_query}")
+                        user_msg_override = refined_query
+                        # Continue to normal flow
+                    else:
+                        # Ask for fee type
+                        _session_pending_fee_flow[session_id] = {
+                            "course": detected_course,
+                            "category": detected_category,
+                            "_waiting_for": "fee_type",
+                        }
+                        ask = _FEE_FLOW_QUESTIONS["fee_type"]["question"]
+                        logger.info(f"Fee flow started (course+category detected) for session {session_id}")
+                        
+                        # Stream the question
+                        words = ask.split()
+                        for word in words:
+                            yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                            await asyncio.sleep(0.02)
+                        yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id})}\n\n"
+                        
+                        _session_history[session_id].append({"role": "user", "content": user_msg})
+                        _session_history[session_id].append({"role": "assistant", "content": ask})
+                        return
+                elif detected_course:
+                    # Has course but no category - ask for category
+                    _session_pending_fee_flow[session_id] = {
+                        "course": detected_course,
+                        "_waiting_for": "category",
+                    }
+                    # Store detected fee type if present
+                    if detected_fee_type:
+                        _session_pending_fee_flow[session_id]["_original_fee_type"] = detected_fee_type
+                    
+                    category_config = _FEE_FLOW_QUESTIONS["category"].get(detected_course)
+                    ask = category_config["question"] if category_config else "Please specify the admission category."
+                    logger.info(f"Fee flow started (course detected) for session {session_id}: course={detected_course}")
+                    
+                    # Stream the question
+                    words = ask.split()
+                    for word in words:
+                        yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                        await asyncio.sleep(0.02)
+                    yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id})}\n\n"
+                    
+                    _session_history[session_id].append({"role": "user", "content": user_msg})
+                    _session_history[session_id].append({"role": "assistant", "content": ask})
+                    return
+                else:
+                    # No course detected - start fee flow from beginning
+                    _session_pending_fee_flow[session_id] = {
+                        "_waiting_for": "course",
+                    }
+                    # Store detected fee type if present
+                    if detected_fee_type:
+                        _session_pending_fee_flow[session_id]["_original_fee_type"] = detected_fee_type
+                    
+                    ask = _FEE_FLOW_QUESTIONS["course"]["question"]
+                    logger.info(f"Fee flow started for session {session_id}")
+                    
+                    # Stream the question
+                    words = ask.split()
+                    for word in words:
+                        yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                        await asyncio.sleep(0.02)
+                    yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id})}\n\n"
+                    
+                    _session_history[session_id].append({"role": "user", "content": user_msg})
+                    _session_history[session_id].append({"role": "assistant", "content": ask})
+                    return
+            
+            # ═══════════════════════════════════════════════════════════
+            # PRIORITY 2: Check if session is in document flow
             # This must execute BEFORE intent classification and RAG retrieval
             # ═══════════════════════════════════════════════════════════
             if session_id in _session_pending_document_flow:
@@ -1409,7 +2004,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                             return
             
             # ═══════════════════════════════════════════════════════════
-            # PRIORITY 2: Check if this is a NEW document query
+            # PRIORITY 3: Check if this is a NEW document query
             # Detect and start document flow BEFORE classification/RAG
             # ═══════════════════════════════════════════════════════════
             if _detect_document_query(user_msg):
@@ -1469,8 +2064,8 @@ async def chat_stream(req: ChatRequest, request: Request):
                     return
             
             # ═══════════════════════════════════════════════════════════
-            # PRIORITY 3: Normal flow - Intent classification and processing
-            # Only reached if NOT in document flow
+            # PRIORITY 4: Normal flow - Intent classification and processing
+            # Only reached if NOT in fee or document flow
             # ═══════════════════════════════════════════════════════════
             
             # Extract query data
@@ -1753,6 +2348,282 @@ async def chat(req: ChatRequest, request: Request):
             _session_history[session_id].append({"role": "user", "content": user_msg})
             _session_history[session_id].append({"role": "assistant", "content": reply})
             return ChatResponse(reply=reply, intent="web_search_permission", session_id=session_id, language=current_language)
+
+    # ── Check if session is in fee flow (HIGHEST PRIORITY) ────
+    # This must execute BEFORE document flow, intent classification, and RAG
+    if session_id in _session_pending_fee_flow:
+        pending = _session_pending_fee_flow[session_id]
+        waiting_for = pending.get("_waiting_for")
+        
+        # Check for topic change
+        if _is_topic_change(user_msg, current_flow="fee_flow"):
+            logger.info(f"Topic change detected during fee flow for session {session_id}")
+            del _session_pending_fee_flow[session_id]
+            # Fall through to normal processing below
+        else:
+            if waiting_for == "course":
+                course = _resolve_fee_course_response(user_msg)
+                if course:
+                    pending["course"] = course
+                    pending["_waiting_for"] = "category"
+                    
+                    # Ask for category based on course
+                    category_config = _FEE_FLOW_QUESTIONS["category"].get(course)
+                    if category_config:
+                        ask = category_config["question"]
+                        _session_history[session_id].append({"role": "user", "content": user_msg})
+                        _session_history[session_id].append({"role": "assistant", "content": ask})
+                        return ChatResponse(
+                            reply=ask,
+                            intent="fee_flow",
+                            session_id=session_id,
+                            language=current_language,
+                        )
+                else:
+                    # Invalid course response
+                    ask = (
+                        "I didn't understand that. Please choose one:\n\n"
+                        + _FEE_FLOW_QUESTIONS["course"]["question"]
+                    )
+                    _session_history[session_id].append({"role": "user", "content": user_msg})
+                    _session_history[session_id].append({"role": "assistant", "content": ask})
+                    return ChatResponse(
+                        reply=ask,
+                        intent="fee_flow",
+                        session_id=session_id,
+                        language=current_language,
+                    )
+            
+            elif waiting_for == "category":
+                course = pending.get("course")
+                category = _resolve_fee_category_response(user_msg, course)
+                
+                if category:
+                    pending["category"] = category
+                    
+                    # Check if fee type is needed
+                    fee_type_from_original = pending.get("_original_fee_type")
+                    if fee_type_from_original:
+                        # Fee type was already clear from original query - complete flow
+                        pending["fee_type"] = fee_type_from_original
+                        del _session_pending_fee_flow[session_id]
+                        
+                        refined_query = f"{pending['fee_type']} for {course} {category} at VNRVJIET"
+                        logger.info(
+                            f"Fee flow completed for session {session_id}: "
+                            f"course={course}, category={category}, fee_type={pending['fee_type']}"
+                        )
+                        
+                        # Retrieve and generate response
+                        try:
+                            rag_result = await retrieve_async(refined_query, top_k=8)
+                            fee_context = rag_result.context_text
+                            fee_sources = list({
+                                f"{c.filename} ({c.source})" for c in rag_result.chunks
+                            })
+                        except Exception as e:
+                            logger.error("RAG retrieval failed during fee flow: %s", e, exc_info=True)
+                            fee_context = ""
+                            fee_sources = []
+                        
+                        history = _session_history.get(session_id, [])
+                        fee_reply = await _generate_llm_response_async(
+                            refined_query,
+                            fee_context,
+                            "",
+                            history=history,
+                            session_id=session_id,
+                            language=current_language,
+                        )
+                        
+                        _session_history[session_id].append({"role": "user", "content": user_msg})
+                        _session_history[session_id].append({"role": "assistant", "content": fee_reply})
+                        
+                        return ChatResponse(
+                            reply=fee_reply,
+                            intent="informational",
+                            session_id=session_id,
+                            sources=fee_sources,
+                            language=current_language,
+                        )
+                    else:
+                        # Ask for fee type
+                        pending["_waiting_for"] = "fee_type"
+                        ask = _FEE_FLOW_QUESTIONS["fee_type"]["question"]
+                        _session_history[session_id].append({"role": "user", "content": user_msg})
+                        _session_history[session_id].append({"role": "assistant", "content": ask})
+                        return ChatResponse(
+                            reply=ask,
+                            intent="fee_flow",
+                            session_id=session_id,
+                            language=current_language,
+                        )
+                else:
+                    # Invalid category response
+                    category_config = _FEE_FLOW_QUESTIONS["category"].get(course)
+                    ask = (
+                        "I didn't understand that. Please choose one:\n\n"
+                        + (category_config["question"] if category_config else "Please specify the admission category.")
+                    )
+                    _session_history[session_id].append({"role": "user", "content": user_msg})
+                    _session_history[session_id].append({"role": "assistant", "content": ask})
+                    return ChatResponse(
+                        reply=ask,
+                        intent="fee_flow",
+                        session_id=session_id,
+                        language=current_language,
+                    )
+            
+            elif waiting_for == "fee_type":
+                fee_type = _resolve_fee_type_response(user_msg)
+                
+                if fee_type:
+                    # All info collected - construct refined query
+                    pending["fee_type"] = fee_type
+                    course = pending["course"]
+                    category = pending["category"]
+                    del _session_pending_fee_flow[session_id]
+                    
+                    refined_query = f"{fee_type} for {course} {category} at VNRVJIET"
+                    logger.info(
+                        f"Fee flow completed for session {session_id}: "
+                        f"course={course}, category={category}, fee_type={fee_type}"
+                    )
+                    
+                    # Retrieve and generate response
+                    try:
+                        rag_result = await retrieve_async(refined_query, top_k=8)
+                        fee_context = rag_result.context_text
+                        fee_sources = list({
+                            f"{c.filename} ({c.source})" for c in rag_result.chunks
+                        })
+                    except Exception as e:
+                        logger.error("RAG retrieval failed during fee flow: %s", e, exc_info=True)
+                        fee_context = ""
+                        fee_sources = []
+                    
+                    history = _session_history.get(session_id, [])
+                    fee_reply = await _generate_llm_response_async(
+                        refined_query,
+                        fee_context,
+                        "",
+                        history=history,
+                        session_id=session_id,
+                        language=current_language,
+                    )
+                    
+                    _session_history[session_id].append({"role": "user", "content": user_msg})
+                    _session_history[session_id].append({"role": "assistant", "content": fee_reply})
+                    
+                    return ChatResponse(
+                        reply=fee_reply,
+                        intent="informational",
+                        session_id=session_id,
+                        sources=fee_sources,
+                        language=current_language,
+                    )
+                else:
+                    # Invalid fee type response
+                    ask = (
+                        "I didn't understand that. Please choose one:\n\n"
+                        + _FEE_FLOW_QUESTIONS["fee_type"]["question"]
+                    )
+                    _session_history[session_id].append({"role": "user", "content": user_msg})
+                    _session_history[session_id].append({"role": "assistant", "content": ask})
+                    return ChatResponse(
+                        reply=ask,
+                        intent="fee_flow",
+                        session_id=session_id,
+                        language=current_language,
+                    )
+    
+    # ── Detect NEW fee query (before document flow) ───────────
+    # Start fee flow if query is about fees/scholarships
+    if _detect_fee_query(user_msg):
+        # Check if user already provided course and/or category
+        detected_course = _extract_course_from_message(user_msg)
+        detected_category = None
+        if detected_course:
+            detected_category = _extract_fee_category_from_message(user_msg, detected_course)
+        
+        # Check if fee type is clear from query
+        detected_fee_type = _extract_fee_type_from_message(user_msg)
+        
+        # Smart flow: skip layers if info is already provided
+        if detected_course and detected_category and detected_fee_type:
+            # User provided everything - construct refined query and go to RAG
+            refined_query = f"{detected_fee_type} for {detected_course} {detected_category} at VNRVJIET"
+            logger.info(
+                f"Fee query with all details: "
+                f"course={detected_course}, category={detected_category}, fee_type={detected_fee_type}"
+            )
+            # Continue to normal flow - will be picked up by document flow override pattern
+            user_msg = refined_query
+        elif detected_course and detected_category:
+            # Has course and category but no fee type
+            if _is_fee_type_clear_from_query(user_msg):
+                # Fee type is clear enough - continue to RAG
+                fee_type_inferred = detected_fee_type or "fee structure"
+                refined_query = f"{fee_type_inferred} for {detected_course} {detected_category} at VNRVJIET"
+                logger.info(f"Fee query with inferred fee type: {refined_query}")
+                user_msg = refined_query
+            else:
+                # Ask for fee type
+                _session_pending_fee_flow[session_id] = {
+                    "course": detected_course,
+                    "category": detected_category,
+                    "_waiting_for": "fee_type",
+                }
+                ask = _FEE_FLOW_QUESTIONS["fee_type"]["question"]
+                logger.info(f"Fee flow started (course+category detected) for session {session_id}")
+                _session_history[session_id].append({"role": "user", "content": user_msg})
+                _session_history[session_id].append({"role": "assistant", "content": ask})
+                return ChatResponse(
+                    reply=ask,
+                    intent="fee_flow",
+                    session_id=session_id,
+                    language=current_language,
+                )
+        elif detected_course:
+            # Has course but no category - ask for category
+            _session_pending_fee_flow[session_id] = {
+                "course": detected_course,
+                "_waiting_for": "category",
+            }
+            # Store detected fee type if present
+            if detected_fee_type:
+                _session_pending_fee_flow[session_id]["_original_fee_type"] = detected_fee_type
+            
+            category_config = _FEE_FLOW_QUESTIONS["category"].get(detected_course)
+            ask = category_config["question"] if category_config else "Please specify the admission category."
+            logger.info(f"Fee flow started (course detected) for session {session_id}: course={detected_course}")
+            _session_history[session_id].append({"role": "user", "content": user_msg})
+            _session_history[session_id].append({"role": "assistant", "content": ask})
+            return ChatResponse(
+                reply=ask,
+                intent="fee_flow",
+                session_id=session_id,
+                language=current_language,
+            )
+        else:
+            # No course detected - start fee flow from beginning
+            _session_pending_fee_flow[session_id] = {
+                "_waiting_for": "course",
+            }
+            # Store detected fee type if present
+            if detected_fee_type:
+                _session_pending_fee_flow[session_id]["_original_fee_type"] = detected_fee_type
+            
+            ask = _FEE_FLOW_QUESTIONS["course"]["question"]
+            logger.info(f"Fee flow started for session {session_id}")
+            _session_history[session_id].append({"role": "user", "content": user_msg})
+            _session_history[session_id].append({"role": "assistant", "content": ask})
+            return ChatResponse(
+                reply=ask,
+                intent="fee_flow",
+                session_id=session_id,
+                language=current_language,
+            )
 
     # ── Check if session is in document flow ──────────────────
     if session_id in _session_pending_document_flow:
@@ -2801,6 +3672,8 @@ async def clear_session(req: ChatRequest):
     - Cutoff collection state
     - Contact request state
     - Last cutoff query cache
+    - Document flow state
+    - Fee flow state
     - Language preference
     """
     session_id = req.session_id
@@ -2842,6 +3715,10 @@ async def clear_session(req: ChatRequest):
     if session_id in _session_pending_document_flow:
         del _session_pending_document_flow[session_id]
         cleared.append("pending_document_flow")
+    
+    if session_id in _session_pending_fee_flow:
+        del _session_pending_fee_flow[session_id]
+        cleared.append("pending_fee_flow")
     
     if session_id in _session_language:
         del _session_language[session_id]
