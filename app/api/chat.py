@@ -105,6 +105,110 @@ _session_pending_websearch: dict[str, str] = {}
 # before running RAG/LLM for broad/vague informational topics.
 _session_pending_clarification: dict[str, dict] = {}
 
+# ── Document flow state (per-session) ─────────────────────
+# Stores course and category selection for "Required Documents" queries
+# Implements 2-layer guided flow: Course → Category → RAG
+_session_pending_document_flow: dict[str, dict] = {}
+
+# Document flow questions (2-layer: course → category)
+_DOCUMENT_FLOW_QUESTIONS = {
+    "course": {
+        "question": (
+            "For which course are you applying? 🎓\n\n"
+            "1️⃣ **B.Tech** (Bachelor of Technology)\n"
+            "2️⃣ **M.Tech** (Master of Technology)\n"
+            "3️⃣ **MCA** (Master of Computer Applications)\n\n"
+            "Reply with the number or course name."
+        ),
+        "options": {
+            "1": "B.Tech",
+            "b.tech": "B.Tech",
+            "btech": "B.Tech",
+            "bachelor": "B.Tech",
+            "2": "M.Tech",
+            "m.tech": "M.Tech",
+            "mtech": "M.Tech",
+            "master": "M.Tech",
+            "3": "MCA",
+            "mca": "MCA",
+        }
+    },
+    "category": {
+        "B.Tech": {
+            "question": (
+                "Under which admission category? 📋\n\n"
+                "1️⃣ **Category A – Convenor Quota** (TG-EAPCET Rank)\n"
+                "2️⃣ **Category B – JEE Mains** All India Open Rank (CRL) – Merit Based\n"
+                "3️⃣ **NRI / NRI Sponsored** – Based on 11th & 12th Aggregate Marks (IPE)\n"
+                "4️⃣ **Supernumerary Quota – FN / OCI / CIWG** (11th & 12th Aggregate Marks)\n\n"
+                "Reply with the number or category name."
+            ),
+            "options": {
+                "1": "Category A – Convenor Quota",
+                "category a": "Category A – Convenor Quota",
+                "cat-a": "Category A – Convenor Quota",
+                "cat a": "Category A – Convenor Quota",
+                "convenor": "Category A – Convenor Quota",
+                "eapcet": "Category A – Convenor Quota",
+                "2": "Category B – JEE Mains",
+                "category b": "Category B – JEE Mains",
+                "cat-b": "Category B – JEE Mains",
+                "cat b": "Category B – JEE Mains",
+                "jee": "Category B – JEE Mains",
+                "jee mains": "Category B – JEE Mains",
+                "3": "NRI / NRI Sponsored",
+                "nri": "NRI / NRI Sponsored",
+                "nri sponsored": "NRI / NRI Sponsored",
+                "4": "Supernumerary Quota – FN / OCI / CIWG",
+                "supernumerary": "Supernumerary Quota – FN / OCI / CIWG",
+                "fn": "Supernumerary Quota – FN / OCI / CIWG",
+                "oci": "Supernumerary Quota – FN / OCI / CIWG",
+                "ciwg": "Supernumerary Quota – FN / OCI / CIWG",
+                "foreign": "Supernumerary Quota – FN / OCI / CIWG",
+            }
+        },
+        "M.Tech": {
+            "question": (
+                "Under which admission category? 📋\n\n"
+                "1️⃣ **Category A – Convenor Quota** (TG-PGECET Rank)\n"
+                "2️⃣ **Category B – GATE** Score Based\n"
+                "3️⃣ **Management Quota**\n\n"
+                "Reply with the number or category name."
+            ),
+            "options": {
+                "1": "Category A – Convenor Quota",
+                "category a": "Category A – Convenor Quota",
+                "cat-a": "Category A – Convenor Quota",
+                "convenor": "Category A – Convenor Quota",
+                "pgecet": "Category A – Convenor Quota",
+                "2": "Category B – GATE",
+                "category b": "Category B – GATE",
+                "cat-b": "Category B – GATE",
+                "gate": "Category B – GATE",
+                "3": "Management Quota",
+                "management": "Management Quota",
+            }
+        },
+        "MCA": {
+            "question": (
+                "Under which admission category? 📋\n\n"
+                "1️⃣ **Category A – Convenor Quota** (TG-ICET Rank)\n"
+                "2️⃣ **Management Quota**\n\n"
+                "Reply with the number or category name."
+            ),
+            "options": {
+                "1": "Category A – Convenor Quota",
+                "category a": "Category A – Convenor Quota",
+                "cat-a": "Category A – Convenor Quota",
+                "convenor": "Category A – Convenor Quota",
+                "icet": "Category A – Convenor Quota",
+                "2": "Management Quota",
+                "management": "Management Quota",
+            }
+        }
+    }
+}
+
 # Cutoff flow: only needs branch, category, gender (shows cutoff ranks)
 _CUTOFF_QUESTIONS = [
     ("branch", "Which **branch(es)** are you interested in? You can pick one, multiple (e.g. CSE, ECE, IT), or say **all**.\n\n{branches}"),
@@ -426,7 +530,7 @@ def _is_topic_change(message: str, current_flow: str = None) -> bool:
     
     Args:
         message: User's message
-        current_flow: Current collection mode ("cutoff", "eligibility", "contact_request", or None)
+        current_flow: Current collection mode ("cutoff", "eligibility", "contact_request", "document_flow", or None)
     """
     msg_lower = message.lower().strip()
     
@@ -469,6 +573,15 @@ def _is_topic_change(message: str, current_flow: str = None) -> bool:
             "course", "branch", "program"
         ]
         if any(kw in msg_lower for kw in cutoff_keywords + info_keywords):
+            return True
+    
+    # If in document flow, detect if asking something unrelated to documents
+    if current_flow == "document_flow":
+        unrelated_keywords = [
+            "cutoff", "rank", "eligible", "placement", "package",
+            "hostel", "fee", "campus", "faculty"
+        ]
+        if any(kw in msg_lower for kw in unrelated_keywords):
             return True
     
     # Check if message is a full question (has question words + multiple words)
@@ -650,6 +763,85 @@ def _resolve_clarification_response(user_reply: str, category: str) -> str | Non
     if best_key:
         return clarified_queries[best_key]
 
+    return None
+
+
+def _detect_document_query(message: str) -> bool:
+    """Detect if query is about required documents."""
+    msg_lower = message.lower().strip()
+    keywords = [
+        "required document", "documents required", "document needed",
+        "documents needed", "what documents", "which documents",
+        "certificates required", "certificates needed",
+        "documents for admission", "admission documents",
+        "papers required", "papers needed",
+    ]
+    return any(kw in msg_lower for kw in keywords)
+
+
+def _extract_course_from_message(message: str) -> str | None:
+    """Extract course name from message."""
+    msg_lower = message.lower().strip()
+    if any(kw in msg_lower for kw in ["b.tech", "btech", "bachelor"]):
+        return "B.Tech"
+    if any(kw in msg_lower for kw in ["m.tech", "mtech", "master"]):
+        return "M.Tech"
+    if "mca" in msg_lower:
+        return "MCA"
+    return None
+
+
+def _extract_category_from_message(message: str, course: str) -> str | None:
+    """Extract admission category from message for a given course."""
+    msg_lower = message.lower().strip()
+    
+    if course not in _DOCUMENT_FLOW_QUESTIONS["category"]:
+        return None
+    
+    options = _DOCUMENT_FLOW_QUESTIONS["category"][course]["options"]
+    
+    # Try longest match first to avoid false positives
+    for key in sorted(options.keys(), key=len, reverse=True):
+        if key in msg_lower:
+            return options[key]
+    
+    return None
+
+
+def _resolve_course_response(user_reply: str) -> str | None:
+    """Map user's course selection to standard course name."""
+    msg_lower = user_reply.lower().strip()
+    options = _DOCUMENT_FLOW_QUESTIONS["course"]["options"]
+    
+    # Try exact match
+    if msg_lower in options:
+        return options[msg_lower]
+    
+    # Try substring match
+    for key, value in options.items():
+        if key in msg_lower:
+            return value
+    
+    return None
+
+
+def _resolve_category_response(user_reply: str, course: str) -> str | None:
+    """Map user's category selection to standard category name."""
+    if course not in _DOCUMENT_FLOW_QUESTIONS["category"]:
+        return None
+    
+    msg_lower = user_reply.lower().strip()
+    options = _DOCUMENT_FLOW_QUESTIONS["category"][course]["options"]
+    
+    # Try exact match
+    if msg_lower in options:
+        return options[msg_lower]
+    
+    # Try substring match (longest first)
+    for key in sorted(options.keys(), key=len, reverse=True):
+        if key in msg_lower:
+            return options[key]
+    
     return None
 
 
@@ -1083,6 +1275,204 @@ async def chat_stream(req: ChatRequest, request: Request):
     
     async def generate():
         try:
+            # ═══════════════════════════════════════════════════════════
+            # PRIORITY 1: Check if session is in document flow (HIGHEST PRIORITY)
+            # This must execute BEFORE intent classification and RAG retrieval
+            # ═══════════════════════════════════════════════════════════
+            if session_id in _session_pending_document_flow:
+                pending = _session_pending_document_flow[session_id]
+                waiting_for = pending.get("_waiting_for")
+                
+                # Check for topic change
+                if _is_topic_change(user_msg, current_flow="document_flow"):
+                    logger.info(f"Topic change detected during document flow for session {session_id}")
+                    del _session_pending_document_flow[session_id]
+                    # Fall through to normal processing below
+                else:
+                    # Continue document flow - handle course/category collection
+                    if waiting_for == "course":
+                        course = _resolve_course_response(user_msg)
+                        if course:
+                            pending["course"] = course
+                            pending["_waiting_for"] = "category"
+                            
+                            # Ask for category based on course
+                            category_config = _DOCUMENT_FLOW_QUESTIONS["category"].get(course)
+                            if category_config:
+                                ask = category_config["question"]
+                                
+                                # Stream the question
+                                words = ask.split()
+                                for word in words:
+                                    yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                                    await asyncio.sleep(0.02)
+                                yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'document_flow', 'session_id': session_id})}\n\n"
+                                
+                                _session_history[session_id].append({"role": "user", "content": user_msg})
+                                _session_history[session_id].append({"role": "assistant", "content": ask})
+                                return
+                        else:
+                            # Invalid course response
+                            ask = (
+                                "I didn't understand that. Please choose one:\n\n"
+                                + _DOCUMENT_FLOW_QUESTIONS["course"]["question"]
+                            )
+                            words = ask.split()
+                            for word in words:
+                                yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                                await asyncio.sleep(0.02)
+                            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'document_flow', 'session_id': session_id})}\n\n"
+                            
+                            _session_history[session_id].append({"role": "user", "content": user_msg})
+                            _session_history[session_id].append({"role": "assistant", "content": ask})
+                            return
+                    
+                    elif waiting_for == "category":
+                        course = pending.get("course")
+                        category = _resolve_category_response(user_msg, course)
+                        
+                        if category:
+                            # Both course and category collected - construct refined query
+                            del _session_pending_document_flow[session_id]
+                            
+                            refined_query = f"Required documents for {course} {category} admission"
+                            logger.info(
+                                f"Document flow completed for session {session_id}: "
+                                f"course={course}, category={category}"
+                            )
+                            
+                            # Now retrieve context using refined query
+                            try:
+                                rag_result = await retrieve_async(refined_query, top_k=8)
+                                doc_context = rag_result.context_text
+                                doc_sources = list({
+                                    f"{c.filename} ({c.source})" for c in rag_result.chunks
+                                })
+                            except Exception as e:
+                                logger.error("RAG retrieval failed during document flow: %s", e, exc_info=True)
+                                doc_context = ""
+                                doc_sources = []
+                            
+                            # Stream LLM response with document context
+                            system = _get_system_prompt()
+                            lang_instruction = get_language_instruction(current_language)
+                            system_with_lang = f"{system}\n\n**IMPORTANT: {lang_instruction}**"
+                            
+                            user_content = f"User question: {refined_query}\n\n--- Context ---\n{doc_context}"
+                            
+                            history = _session_history.get(session_id, [])
+                            trimmed_history = history[-MAX_HISTORY:] if history else []
+                            
+                            messages = [{"role": "system", "content": system_with_lang}]
+                            messages.extend(trimmed_history)
+                            messages.append({"role": "user", "content": user_content})
+                            
+                            # Stream from OpenAI
+                            client = _get_async_openai()
+                            stream = await client.chat.completions.create(
+                                model=settings.OPENAI_MODEL,
+                                messages=messages,
+                                temperature=0.3,
+                                max_tokens=600,
+                                stream=True,
+                            )
+                            
+                            full_reply = ""
+                            async for chunk in stream:
+                                if chunk.choices[0].delta.content:
+                                    token = chunk.choices[0].delta.content
+                                    full_reply += token
+                                    yield f"data: {json.dumps({'token': token, 'done': False})}\n\n"
+                            
+                            # Send completion signal with metadata
+                            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'informational', 'sources': doc_sources, 'session_id': session_id})}\n\n"
+                            
+                            # Update history
+                            _session_history[session_id].append({"role": "user", "content": user_msg})
+                            _session_history[session_id].append({"role": "assistant", "content": full_reply})
+                            return
+                        else:
+                            # Invalid category response
+                            category_config = _DOCUMENT_FLOW_QUESTIONS["category"].get(course)
+                            ask = (
+                                "I didn't understand that. Please choose one:\n\n"
+                                + (category_config["question"] if category_config else "Please specify the admission category.")
+                            )
+                            words = ask.split()
+                            for word in words:
+                                yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                                await asyncio.sleep(0.02)
+                            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'document_flow', 'session_id': session_id})}\n\n"
+                            
+                            _session_history[session_id].append({"role": "user", "content": user_msg})
+                            _session_history[session_id].append({"role": "assistant", "content": ask})
+                            return
+            
+            # ═══════════════════════════════════════════════════════════
+            # PRIORITY 2: Check if this is a NEW document query
+            # Detect and start document flow BEFORE classification/RAG
+            # ═══════════════════════════════════════════════════════════
+            if _detect_document_query(user_msg):
+                # Check if user already provided both course and category
+                detected_course = _extract_course_from_message(user_msg)
+                detected_category = None
+                if detected_course:
+                    detected_category = _extract_category_from_message(user_msg, detected_course)
+                
+                if detected_course and detected_category:
+                    # User provided both - construct refined query and continue to RAG
+                    refined_query = f"Required documents for {detected_course} {detected_category} admission"
+                    logger.info(
+                        f"Document query with both course and category: "
+                        f"course={detected_course}, category={detected_category}"
+                    )
+                    # Override user_msg for RAG but DON'T start flow - just fall through
+                    # Set a flag to use refined query later
+                    user_msg_override = refined_query
+                elif not detected_course:
+                    # Start document flow - ask for course
+                    _session_pending_document_flow[session_id] = {
+                        "_waiting_for": "course",
+                    }
+                    ask = _DOCUMENT_FLOW_QUESTIONS["course"]["question"]
+                    logger.info(f"Document flow started for session {session_id}")
+                    
+                    # Stream the question
+                    words = ask.split()
+                    for word in words:
+                        yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                        await asyncio.sleep(0.02)
+                    yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'document_flow', 'session_id': session_id})}\n\n"
+                    
+                    _session_history[session_id].append({"role": "user", "content": user_msg})
+                    _session_history[session_id].append({"role": "assistant", "content": ask})
+                    return
+                else:
+                    # Has course but no category - ask for category
+                    _session_pending_document_flow[session_id] = {
+                        "course": detected_course,
+                        "_waiting_for": "category",
+                    }
+                    category_config = _DOCUMENT_FLOW_QUESTIONS["category"].get(detected_course)
+                    ask = category_config["question"] if category_config else "Please specify the admission category."
+                    logger.info(f"Document flow started (course detected) for session {session_id}: course={detected_course}")
+                    
+                    # Stream the question
+                    words = ask.split()
+                    for word in words:
+                        yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                        await asyncio.sleep(0.02)
+                    yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'document_flow', 'session_id': session_id})}\n\n"
+                    
+                    _session_history[session_id].append({"role": "user", "content": user_msg})
+                    _session_history[session_id].append({"role": "assistant", "content": ask})
+                    return
+            
+            # ═══════════════════════════════════════════════════════════
+            # PRIORITY 3: Normal flow - Intent classification and processing
+            # Only reached if NOT in document flow
+            # ═══════════════════════════════════════════════════════════
+            
             # Extract query data
             branch = extract_branch(user_msg)
             category = extract_category(user_msg)
@@ -1090,16 +1480,19 @@ async def chat_stream(req: ChatRequest, request: Request):
             rank = extract_rank(user_msg)
             year = extract_year(user_msg)
             
+            # Use overridden query if set (for document queries with both course and category)
+            query_for_processing = locals().get('user_msg_override', user_msg)
+            
             # Classify intent
-            classification = classify(user_msg)
+            classification = classify(query_for_processing)
             intent = classification.intent
             
             # Check cache first for informational queries
             if intent == IntentType.INFORMATIONAL:
-                cached = _get_cached_response(user_msg, intent.value, current_language)
+                cached = _get_cached_response(query_for_processing, intent.value, current_language)
                 if cached:
                     reply, cached_sources = cached
-                    logger.info(f"Cache HIT (streaming): {user_msg[:50]}...")
+                    logger.info(f"Cache HIT (streaming): {query_for_processing[:50]}...")
                     
                     # Stream cached response word by word for consistent UX
                     words = reply.split()
@@ -1157,7 +1550,7 @@ async def chat_stream(req: ChatRequest, request: Request):
             if intent in (IntentType.INFORMATIONAL, IntentType.MIXED):
                 try:
                     top_k = 8 if intent == IntentType.MIXED else 5
-                    rag_result = await retrieve_async(user_msg, top_k=top_k)
+                    rag_result = await retrieve_async(query_for_processing, top_k=top_k)
                     rag_context = rag_result.context_text
                     for chunk in rag_result.chunks:
                         sources.append(f"{chunk.filename} ({chunk.source})")
@@ -1169,7 +1562,7 @@ async def chat_stream(req: ChatRequest, request: Request):
             lang_instruction = get_language_instruction(current_language)
             system_with_lang = f"{system}\n\n**IMPORTANT: {lang_instruction}**"
             
-            user_content_parts = [f"User question: {user_msg}"]
+            user_content_parts = [f"User question: {query_for_processing}"]
             if cutoff_info:
                 user_content_parts.append(f"\n--- Cutoff Data ---\n{cutoff_info}")
             if rag_context:
@@ -1205,7 +1598,7 @@ async def chat_stream(req: ChatRequest, request: Request):
             
             # Cache the response for future use
             if intent == IntentType.INFORMATIONAL:
-                _cache_response(user_msg, intent.value, full_reply, sources, current_language)
+                _cache_response(query_for_processing, intent.value, full_reply, sources, current_language)
             
             # Update history
             _session_history[session_id].append({"role": "user", "content": user_msg})
@@ -1360,6 +1753,112 @@ async def chat(req: ChatRequest, request: Request):
             _session_history[session_id].append({"role": "user", "content": user_msg})
             _session_history[session_id].append({"role": "assistant", "content": reply})
             return ChatResponse(reply=reply, intent="web_search_permission", session_id=session_id, language=current_language)
+
+    # ── Check if session is in document flow ──────────────────
+    if session_id in _session_pending_document_flow:
+        pending = _session_pending_document_flow[session_id]
+        waiting_for = pending.get("_waiting_for")
+        
+        # Check for topic change
+        if _is_topic_change(user_msg, current_flow="document_flow"):
+            logger.info(f"Topic change detected during document flow for session {session_id}")
+            del _session_pending_document_flow[session_id]
+            # Fall through to normal processing below
+        else:
+            if waiting_for == "course":
+                course = _resolve_course_response(user_msg)
+                if course:
+                    pending["course"] = course
+                    pending["_waiting_for"] = "category"
+                    
+                    # Ask for category based on course
+                    category_config = _DOCUMENT_FLOW_QUESTIONS["category"].get(course)
+                    if category_config:
+                        ask = category_config["question"]
+                        _session_history[session_id].append({"role": "user", "content": user_msg})
+                        _session_history[session_id].append({"role": "assistant", "content": ask})
+                        return ChatResponse(
+                            reply=ask,
+                            intent="document_flow",
+                            session_id=session_id,
+                            language=current_language,
+                        )
+                else:
+                    # Invalid course response
+                    ask = (
+                        "I didn't understand that. Please choose one:\n\n"
+                        + _DOCUMENT_FLOW_QUESTIONS["course"]["question"]
+                    )
+                    _session_history[session_id].append({"role": "user", "content": user_msg})
+                    _session_history[session_id].append({"role": "assistant", "content": ask})
+                    return ChatResponse(
+                        reply=ask,
+                        intent="document_flow",
+                        session_id=session_id,
+                        language=current_language,
+                    )
+            
+            elif waiting_for == "category":
+                course = pending.get("course")
+                category = _resolve_category_response(user_msg, course)
+                
+                if category:
+                    # Both course and category collected - construct refined query
+                    del _session_pending_document_flow[session_id]
+                    
+                    refined_query = f"Required documents for {course} {category} admission"
+                    logger.info(
+                        f"Document flow completed for session {session_id}: "
+                        f"course={course}, category={category}"
+                    )
+                    
+                    # Retrieve context using refined query
+                    try:
+                        rag_result = await retrieve_async(refined_query, top_k=8)
+                        doc_context = rag_result.context_text
+                        doc_sources = list({
+                            f"{c.filename} ({c.source})" for c in rag_result.chunks
+                        })
+                    except Exception as e:
+                        logger.error("RAG retrieval failed during document flow: %s", e, exc_info=True)
+                        doc_context = ""
+                        doc_sources = []
+                    
+                    history = _session_history.get(session_id, [])
+                    doc_reply = await _generate_llm_response_async(
+                        refined_query,
+                        doc_context,
+                        "",
+                        history=history,
+                        session_id=session_id,
+                        language=current_language,
+                    )
+                    
+                    _session_history[session_id].append({"role": "user", "content": user_msg})
+                    _session_history[session_id].append({"role": "assistant", "content": doc_reply})
+                    
+                    return ChatResponse(
+                        reply=doc_reply,
+                        intent="informational",
+                        session_id=session_id,
+                        sources=doc_sources,
+                        language=current_language,
+                    )
+                else:
+                    # Invalid category response
+                    category_config = _DOCUMENT_FLOW_QUESTIONS["category"].get(course)
+                    ask = (
+                        "I didn't understand that. Please choose one:\n\n"
+                        + (category_config["question"] if category_config else "Please specify the admission category.")
+                    )
+                    _session_history[session_id].append({"role": "user", "content": user_msg})
+                    _session_history[session_id].append({"role": "assistant", "content": ask})
+                    return ChatResponse(
+                        reply=ask,
+                        intent="document_flow",
+                        session_id=session_id,
+                        language=current_language,
+                    )
 
     # ── Check if session is awaiting a clarifying answer ──────
     if session_id in _session_pending_clarification:
@@ -1816,6 +2315,93 @@ async def chat(req: ChatRequest, request: Request):
         _session_history[session_id].append({"role": "assistant", "content": ask})
         return ChatResponse(reply=ask, intent="contact_request", session_id=session_id, language=current_language)
 
+    # ═══════════════════════════════════════════════════════════
+    # PRIORITY: Check for NEW Required Documents query
+    # Detect and start document flow BEFORE classification/RAG
+    # ═══════════════════════════════════════════════════════════
+    if _detect_document_query(user_msg):
+        # Check if user already provided both course and category
+        detected_course = _extract_course_from_message(user_msg)
+        detected_category = None
+        if detected_course:
+            detected_category = _extract_category_from_message(user_msg, detected_course)
+        
+        if detected_course and detected_category:
+            # User provided both - skip flow, construct query and retrieve directly
+            refined_query = f"Required documents for {detected_course} {detected_category} admission"
+            logger.info(
+                f"Document query with both course and category: "
+                f"course={detected_course}, category={detected_category}"
+            )
+            # Retrieve context using refined query
+            try:
+                rag_result = await retrieve_async(refined_query, top_k=8)
+                doc_context = rag_result.context_text
+                doc_sources = list({
+                    f"{c.filename} ({c.source})" for c in rag_result.chunks
+                })
+            except Exception as e:
+                logger.error("RAG retrieval failed during document flow: %s", e, exc_info=True)
+                doc_context = ""
+                doc_sources = []
+            
+            history = _session_history.get(session_id, [])
+            doc_reply = await _generate_llm_response_async(
+                refined_query,
+                doc_context,
+                "",
+                history=history,
+                session_id=session_id,
+                language=current_language,
+            )
+            
+            _session_history[session_id].append({"role": "user", "content": user_msg})
+            _session_history[session_id].append({"role": "assistant", "content": doc_reply})
+            
+            return ChatResponse(
+                reply=doc_reply,
+                intent="informational",
+                session_id=session_id,
+                sources=doc_sources,
+                language=current_language,
+            )
+        elif not detected_course:
+            # Start document flow - need to collect course first
+            _session_pending_document_flow[session_id] = {
+                "_waiting_for": "course",
+            }
+            ask = _DOCUMENT_FLOW_QUESTIONS["course"]["question"]
+            logger.info(f"Document flow started for session {session_id}")
+            
+            _session_history[session_id].append({"role": "user", "content": user_msg})
+            _session_history[session_id].append({"role": "assistant", "content": ask})
+            
+            return ChatResponse(
+                reply=ask,
+                intent="document_flow",
+                session_id=session_id,
+                language=current_language,
+            )
+        else:
+            # Has course but no category - start at category question
+            _session_pending_document_flow[session_id] = {
+                "course": detected_course,
+                "_waiting_for": "category",
+            }
+            category_config = _DOCUMENT_FLOW_QUESTIONS["category"].get(detected_course)
+            ask = category_config["question"] if category_config else "Please specify the admission category."
+            logger.info(f"Document flow started (course detected) for session {session_id}: course={detected_course}")
+            
+            _session_history[session_id].append({"role": "user", "content": user_msg})
+            _session_history[session_id].append({"role": "assistant", "content": ask})
+            
+            return ChatResponse(
+                reply=ask,
+                intent="document_flow",
+                session_id=session_id,
+                language=current_language,
+            )
+
     # Classify
     classification = classify(user_msg)
     intent = classification.intent
@@ -2046,6 +2632,7 @@ async def chat(req: ChatRequest, request: Request):
     if intent in (IntentType.INFORMATIONAL, IntentType.MIXED):
         # ── Clarification gate (informational only, no cutoff data yet) ────
         # For broad/vague topics, ask a narrowing question before retrieving.
+        # Note: Document queries are handled earlier before classification
         if intent == IntentType.INFORMATIONAL and not cutoff_info:
             clari_category = _detect_category_needing_clarification(user_msg)
             if clari_category:
@@ -2251,6 +2838,10 @@ async def clear_session(req: ChatRequest):
     if session_id in _session_pending_clarification:
         del _session_pending_clarification[session_id]
         cleared.append("pending_clarification")
+    
+    if session_id in _session_pending_document_flow:
+        del _session_pending_document_flow[session_id]
+        cleared.append("pending_document_flow")
     
     if session_id in _session_language:
         del _session_language[session_id]
