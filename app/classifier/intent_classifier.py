@@ -61,14 +61,71 @@ _COMPARE_PATTERNS: list[re.Pattern] = [
 
 _CUTOFF_KEYWORDS: list[str] = [
     "cutoff", "cut-off", "cut off",
-    "last rank", "closing rank", "opening rank",
+    "last rank", "closing rank", "opening rank", "first rank",
     "eapcet", "tseamcet", "ts eamcet", "ap eamcet", "tgeapcet",
     "seat allotment", "counselling", "counseling",
     "trend", "trends", "trending", "rank trend",
     "previous year", "previous years", "past year", "past years",
     "historical rank", "historical cutoff", "year by year",
     "over the years", "across years", "comparison over years",
+    # Quota / round keywords that only appear in cutoff context
+    "convenor quota", "management quota", "sports quota", "ncc quota",
+    "round 1", "round 2", "round 3",
 ]
+
+_CATEGORY_PATTERN = re.compile(
+    # BC-A/BC-B/BC-C/BC-D/BC-E, OC, SC, ST, EWS, SC-I/SC-II sub-types.
+    # "sc" and "st" use negative lookbehind to avoid matching ordinals like "1st".
+    r"\b(bc[-\s]?[abcde]|oc|(?<!\d)sc(?!\w)|(?<!\d)st(?!\w)|ews|sc[-\s]?[i1-3]+)\b",
+    re.I,
+)
+
+_YEAR_PATTERN = re.compile(r"\b(202[0-9]|201[0-9])\b")
+
+_BRANCH_PATTERN = re.compile(
+    # Excludes ambiguous short words like "it" and "me" which are common English words.
+    # "IT" and "ME" as branch codes require a category or year in the same query
+    # to be flagged as structured cutoff signals (handled by signals >= 2).
+    r"\b(cse[-\s]?cs[mocd]|civil|civ|eee|ece|cse|csm|csd|csc|cso|csb|aid|aut|bio|eie|rai|vlsi|mech)\b",
+    re.I,
+)
+
+
+def _has_category_code(query: str) -> bool:
+    """Return True if query contains an EAPCET caste/category code."""
+    return bool(_CATEGORY_PATTERN.search(query))
+
+
+def _has_year_value(query: str) -> bool:
+    return bool(_YEAR_PATTERN.search(query))
+
+
+def _has_branch_code(query: str) -> bool:
+    return bool(_BRANCH_PATTERN.search(query))
+
+
+def _has_structured_cutoff_signals(query: str) -> bool:
+    """
+    Return True when the query has meaningful structured EAPCET signals.
+    Requires at least TWO of {category code, branch code, year} to be present,
+    OR a category code combined with a generic cutoff keyword.
+    A lone category code (e.g. "BC-A scholarship") is NOT sufficient on its own
+    to avoid routing informational queries to Firestore by mistake.
+    """
+    has_cat    = _has_category_code(query)
+    has_year   = _has_year_value(query)
+    has_branch = _has_branch_code(query)
+    has_kw     = any(kw in query for kw in _CUTOFF_KEYWORDS)
+
+    signals = sum([has_cat, has_year, has_branch])
+    # Two independent EAPCET fields = strong structured query
+    if signals >= 2:
+        return True
+    # Category + explicit cutoff keyword (e.g. "OC cutoff" or "BC-A last rank")
+    if has_cat and has_kw:
+        return True
+    return False
+
 
 _ELIGIBILITY_KEYWORDS: list[str] = [
     "eligible", "eligibility",
@@ -138,7 +195,10 @@ def _is_greeting(query: str) -> bool:
 
 def _has_cutoff_intent(query: str) -> bool:
     q = query.lower()
-    return any(kw in q for kw in _CUTOFF_KEYWORDS)
+    if any(kw in q for kw in _CUTOFF_KEYWORDS):
+        return True
+    # Structured EAPCET signals (category/branch/year combinations)
+    return _has_structured_cutoff_signals(q)
 
 
 def _has_eligibility_intent(query: str) -> bool:
@@ -280,6 +340,7 @@ def classify(query: str) -> ClassificationResult:
     has_cutoff = _has_cutoff_intent(query)
     has_eligibility = _has_eligibility_intent(query)
     looks_like_data = _looks_like_cutoff_data(query)
+    has_structured = _has_structured_cutoff_signals(query.lower())
 
     # Heuristic: if cutoff keywords are present AND the query is long
     # (more than 12 words) it likely also needs informational context.
@@ -301,6 +362,15 @@ def classify(query: str) -> ClassificationResult:
             intent=IntentType.ELIGIBILITY if has_rank else IntentType.CUTOFF,
             confidence=0.90,
             reason="Structured cutoff data detected",
+        )
+
+    # Queries containing EAPCET-specific structured signals (category codes,
+    # branch+year combos) must always go through Firestore — never RAG.
+    if has_structured:
+        return ClassificationResult(
+            intent=IntentType.CUTOFF,
+            confidence=0.92,
+            reason="Structured EAPCET signals detected (category/branch/year)",
         )
 
     if has_cutoff and word_count > 12:
