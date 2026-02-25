@@ -343,15 +343,33 @@ def get_cutoff(
             if "caste" in d and "category" not in d:
                 d["category"] = d["caste"]
             _resolve_rank_fields(d)
-            if d.get("cutoff_rank") is not None:
-                rows.append(d)
+            rows.append(d)
 
     # Normalize first_rank / last_rank / cutoff_rank for every row
     for r in rows:
         _resolve_rank_fields(r)
 
-    # ── Only keep rows that have a valid cutoff_rank ───────────────
-    rows = [r for r in rows if r.get("cutoff_rank") is not None]
+    # Deduplicate rows — main query + alt_query may return the same Firestore doc
+    # (old EWS docs have both 'caste' and 'category' fields after merge-upsert).
+    # Keep the row with the most complete data (prefer rows WITH first_rank).
+    seen_keys: dict = {}
+    for r in rows:
+        key = (
+            r.get("branch", ""),
+            r.get("category", r.get("caste", "")),
+            r.get("year", ""),
+            r.get("round", ""),
+            r.get("gender", ""),
+            r.get("quota", ""),
+        )
+        if key not in seen_keys:
+            seen_keys[key] = r
+        else:
+            # Prefer the row that has first_rank populated
+            existing = seen_keys[key]
+            if existing.get("first_rank") is None and r.get("first_rank") is not None:
+                seen_keys[key] = r
+    rows = list(seen_keys.values())
 
     # Sort: latest year first, then latest round
     rows.sort(key=lambda r: (r.get("year", 0), r.get("round", 0)), reverse=True)
@@ -392,15 +410,19 @@ def get_cutoff(
             lr = r.get("last_rank") if r.get("last_rank") is not None else cr
             fr = r.get("first_rank")   # None when not stored in Firestore
 
-            if fr is not None and lr is not None and fr != lr:
+            if lr is None:
+                year_lines.append(f"• **{y}**: No allotments recorded (N/A)")
+            elif fr is not None and fr != lr:
                 year_lines.append(f"• **{y}**: First Rank **{fr:,}** | Last Rank (Cutoff) **{lr:,}**")
-            elif lr is not None:
+            else:
                 year_lines.append(f"• **{y}**: Last Rank (Cutoff) **{lr:,}**")
-            ranks_list.append(cr or 0)
+            if cr is not None:
+                ranks_list.append(cr)
 
         trend_analysis = ""
-        if len(ranks_list) >= 2:
-            pct_change = ((ranks_list[-1] - ranks_list[0]) / ranks_list[0] * 100) if ranks_list[0] > 0 else 0
+        valid_ranks = [v for v in ranks_list if v > 0]
+        if len(valid_ranks) >= 2:
+            pct_change = ((valid_ranks[-1] - valid_ranks[0]) / valid_ranks[0] * 100) if valid_ranks[0] > 0 else 0
             if abs(pct_change) < 5:
                 trend_analysis = (
                     f"\n\n📊 **Trend Analysis:** The cutoff has remained relatively stable "
@@ -472,8 +494,8 @@ def get_cutoff(
         fr = r.get("first_rank")   # None when not stored in Firestore
         lr = r.get("last_rank") if r.get("last_rank") is not None else r.get("cutoff_rank")
 
-        fr_str = f"{fr:,}" if fr is not None else "Not available (re-ingest PDF to populate)"
-        lr_str = f"{lr:,}" if lr is not None else "—"
+        fr_str = f"{fr:,}" if fr is not None else "N/A"
+        lr_str = f"{lr:,}" if lr is not None else "N/A"
 
         block = (
             f"**Branch:** {r.get('branch', branch)}\n"
@@ -807,8 +829,8 @@ def format_cutoffs_table(
                 fr  = rec.get("first_rank")
                 lr  = rec.get("last_rank") if rec.get("last_rank") is not None else rec.get("cutoff_rank")
 
-                fr_str = f"{fr:,}" if isinstance(fr, int) else "Not available (re-ingest PDF to populate)"
-                lr_str = f"{lr:,}" if isinstance(lr, int) else "—"
+                fr_str = f"{fr:,}" if isinstance(fr, int) else "N/A"
+                lr_str = f"{lr:,}" if isinstance(lr, int) else "N/A"
 
                 block = (
                     f"**Branch:** {branch_name}\n"

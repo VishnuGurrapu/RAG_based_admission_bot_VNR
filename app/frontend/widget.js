@@ -245,8 +245,22 @@
 
   /** Minimal Markdown → HTML (headings, bold, italic, lists, line breaks) */
   function renderMarkdown(text) {
+    // ── Step 1: wrap field lines (**Label:** value) in block divs LINE BY LINE
+    // Using split/map is more reliable than a /^$/gm regex (avoids CRLF edge cases).
+    text = text
+      .split("\n")
+      .map(function (line) {
+        // Match lines like **Branch:** CSE  or  **First Rank (Opening):** 1,714
+        // The colon sits INSIDE the closing **: **Label:**
+        if (/^\*\*[A-Za-z][^*]*:\*\*\s*.+/.test(line)) {
+          return '<div style="display:block!important;margin:2px 0">' + line + "</div>";
+        }
+        return line;
+      })
+      .join("\n");
+
     let html = text
-      // Headings: ### h3, ## h2, # h1 (must be at line start)
+      // Headings: ### h3, ## h2, # h1
       .replace(/^###\s+(.+)$/gm, "<strong style='font-size:1.05em;display:block;margin:8px 0 4px;'>$1</strong>")
       .replace(/^##\s+(.+)$/gm, "<strong style='font-size:1.1em;display:block;margin:8px 0 4px;'>$1</strong>")
       .replace(/^#\s+(.+)$/gm, "<strong style='font-size:1.15em;display:block;margin:8px 0 4px;'>$1</strong>")
@@ -261,7 +275,9 @@
       // Ordered list items
       .replace(/^[\s]*\d+\.\s+(.+)$/gm, "<li>$1</li>")
       // Line breaks
-      .replace(/\n/g, "<br>");
+      .replace(/\n/g, "<br>")
+      // Remove redundant <br> immediately after block divs (prevents double spacing)
+      .replace(/<\/div><br>/g, "</div>");
 
     // Wrap consecutive <li> in <ul>
     html = html.replace(

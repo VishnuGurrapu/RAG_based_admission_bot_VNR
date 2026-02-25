@@ -397,6 +397,11 @@ html, body {
   position: relative;
 }
 
+/* Ensure block divs inside bot bubbles always display as block */
+.message.bot .bubble div[style] {
+  display: block !important;
+}
+
 .message.bot .bubble {
   background: var(--bg-white);
   color: var(--text-primary);

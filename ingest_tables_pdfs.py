@@ -140,12 +140,14 @@ def extract_regular_table(
             first_rank = parse_rank(row[first_col])
             last_rank  = parse_rank(row[last_col])
 
-            if last_rank is None and first_rank is None:
-                continue
-            # If only one value, treat as Last rank
-            if last_rank is None:
+            # If only last is missing but first exists, use first as last
+            # (one student admitted: First == Last)
+            if last_rank is None and first_rank is not None:
                 last_rank = first_rank
 
+            # Even when BOTH are None (no allotments that year), still store
+            # the record so the engine can display "N/A" instead of
+            # reporting "not found" for a known branch/category combination.
             rec: dict = {
                 "branch":      branch,
                 "category":    cat,
@@ -153,7 +155,7 @@ def extract_regular_table(
                 "year":        year,
                 "round":       1,
                 "quota":       quota,
-                "cutoff_rank": last_rank,
+                "cutoff_rank": last_rank,   # None means no allotments
                 "last_rank":   last_rank,
             }
             if first_rank is not None:
@@ -188,9 +190,7 @@ def extract_ews_table(
                 continue
             first_rank = parse_rank(row[first_col])
             last_rank  = parse_rank(row[last_col])
-            if last_rank is None and first_rank is None:
-                continue
-            if last_rank is None:
+            if last_rank is None and first_rank is not None:
                 last_rank = first_rank
             rec: dict = {
                 "branch":      branch,
@@ -303,7 +303,9 @@ def extract_pdf(pdf_path: Path, year: int) -> list[dict]:
 def get_existing_doc_ids(db, year: int) -> dict[str, bool]:
     """
     Fetch all doc IDs for given year.
-    Returns {doc_id: has_first_rank}
+    Returns {doc_id: is_fully_ingested}
+    A doc is considered 'complete' when it has the 'last_rank' key in Firestore
+    (present in all records ingested by the new script, even when value is None).
     """
     result: dict[str, bool] = {}
     try:
@@ -315,7 +317,8 @@ def get_existing_doc_ids(db, year: int) -> dict[str, bool]:
         )
         for doc in docs:
             d = doc.to_dict()
-            result[doc.id] = d.get("first_rank") is not None
+            # 'last_rank' key existence means fully ingested (even if its value is None)
+            result[doc.id] = "last_rank" in d
     except Exception as e:
         print(f"[WARN] Could not prefetch existing IDs for {year}: {e}")
     return result
@@ -344,7 +347,7 @@ def upload_records(
         has_fr = existing.get(doc_id)
 
         if doc_id in existing and has_fr:
-            # Complete record exists — skip
+            # Fully ingested record exists (last_rank key present) — skip
             skipped += 1
             continue
 
