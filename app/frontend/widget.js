@@ -688,6 +688,37 @@
     scrollToBottom();
   }
 
+  /**
+   * Render clickable options as buttons after a bot message
+   * @param {Array} options - Array of {label, value} objects
+   * @param {HTMLElement} bubbleElement - The bubble element to attach options to
+   */
+  function renderClickableOptions(options, bubbleElement) {
+    if (!options || options.length === 0) return;
+
+    const optionsContainer = document.createElement("div");
+    optionsContainer.className = "clickable-options";
+
+    options.forEach((opt) => {
+      const btn = document.createElement("button");
+      btn.className = "option-button";
+      btn.textContent = opt.label;
+
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        // Remove all option buttons after selection
+        optionsContainer.remove();
+        // Send the value automatically
+        sendMessage(opt.value);
+      });
+
+      optionsContainer.appendChild(btn);
+    });
+
+    bubbleElement.appendChild(optionsContainer);
+    scrollToBottom();
+  }
+
   function showTyping() {
     if (typingEl) return; // already showing
     typingEl = document.createElement("div");
@@ -892,6 +923,7 @@
       let fullReply = "";
       let sources = [];
       let intent = "";
+      let options = [];  // Clickable options from backend
       let hasError = false;
 
       while (true) {
@@ -953,6 +985,9 @@
                 if (data.intent) {
                   intent = data.intent;
                 }
+                if (data.options && Array.isArray(data.options)) {
+                  options = data.options;
+                }
               }
             } catch (e) {
               console.error("Failed to parse SSE data:", e, line);
@@ -971,6 +1006,11 @@
           "font-size:10px;color:#888;margin-top:6px;font-style:italic;";
         srcSpan.textContent = "📄 Sources: " + sources.join(", ");
         bubble.appendChild(srcSpan);
+      }
+
+      // Render clickable options if available
+      if (options && options.length > 0) {
+        renderClickableOptions(options, bubble);
       }
 
     } catch (err) {

@@ -119,13 +119,12 @@ _session_pending_fee_flow: dict[str, dict] = {}
 # Document flow questions (2-layer: course → category)
 _DOCUMENT_FLOW_QUESTIONS = {
     "course": {
-        "question": (
-            "For which course are you applying? 🎓\n\n"
-            "1️⃣ **B.Tech** (Bachelor of Technology)\n"
-            "2️⃣ **M.Tech** (Master of Technology)\n"
-            "3️⃣ **MCA** (Master of Computer Applications)\n\n"
-            "Reply with the number or course name."
-        ),
+        "question": "For which course are you applying? 🎓",
+        "clickable_options": [
+            {"label": "B.Tech (Bachelor of Technology)", "value": "B.Tech"},
+            {"label": "M.Tech (Master of Technology)", "value": "M.Tech"},
+            {"label": "MCA (Master of Computer Applications)", "value": "MCA"},
+        ],
         "options": {
             "1": "B.Tech",
             "b.tech": "B.Tech",
@@ -141,14 +140,13 @@ _DOCUMENT_FLOW_QUESTIONS = {
     },
     "category": {
         "B.Tech": {
-            "question": (
-                "Under which admission category? 📋\n\n"
-                "1️⃣ **Category A – Convenor Quota** (TG-EAPCET Rank)\n"
-                "2️⃣ **Category B – JEE Mains** All India Open Rank (CRL) – Merit Based\n"
-                "3️⃣ **NRI / NRI Sponsored** – Based on 11th & 12th Aggregate Marks (IPE)\n"
-                "4️⃣ **Supernumerary Quota – FN / OCI / CIWG** (11th & 12th Aggregate Marks)\n\n"
-                "Reply with the number or category name."
-            ),
+            "question": "Under which admission category? 📋",
+            "clickable_options": [
+                {"label": "Category A – Convenor Quota (TG-EAPCET Rank)", "value": "Category A – Convenor Quota"},
+                {"label": "Category B – JEE Mains (All India Open Rank)", "value": "Category B – JEE Mains"},
+                {"label": "NRI / NRI Sponsored (11th & 12th Aggregate)", "value": "NRI / NRI Sponsored"},
+                {"label": "Supernumerary Quota – FN / OCI / CIWG", "value": "Supernumerary Quota – FN / OCI / CIWG"},
+            ],
             "options": {
                 "1": "Category A – Convenor Quota",
                 "category a": "Category A – Convenor Quota",
@@ -174,13 +172,12 @@ _DOCUMENT_FLOW_QUESTIONS = {
             }
         },
         "M.Tech": {
-            "question": (
-                "Under which admission category? 📋\n\n"
-                "1️⃣ **Category A – Convenor Quota** (TG-PGECET Rank)\n"
-                "2️⃣ **Category B – GATE** Score Based\n"
-                "3️⃣ **Management Quota**\n\n"
-                "Reply with the number or category name."
-            ),
+            "question": "Under which admission category? 📋",
+            "clickable_options": [
+                {"label": "Category A – Convenor Quota (TG-PGECET Rank)", "value": "Category A – Convenor Quota"},
+                {"label": "Category B – GATE (Score Based)", "value": "Category B – GATE"},
+                {"label": "Management Quota", "value": "Management Quota"},
+            ],
             "options": {
                 "1": "Category A – Convenor Quota",
                 "category a": "Category A – Convenor Quota",
@@ -196,12 +193,11 @@ _DOCUMENT_FLOW_QUESTIONS = {
             }
         },
         "MCA": {
-            "question": (
-                "Under which admission category? 📋\n\n"
-                "1️⃣ **Category A – Convenor Quota** (TG-ICET Rank)\n"
-                "2️⃣ **Management Quota**\n\n"
-                "Reply with the number or category name."
-            ),
+            "question": "Under which admission category? 📋",
+            "clickable_options": [
+                {"label": "Category A – Convenor Quota (TG-ICET Rank)", "value": "Category A – Convenor Quota"},
+                {"label": "Management Quota", "value": "Management Quota"},
+            ],
             "options": {
                 "1": "Category A – Convenor Quota",
                 "category a": "Category A – Convenor Quota",
@@ -218,14 +214,12 @@ _DOCUMENT_FLOW_QUESTIONS = {
 # Fee flow questions (2-3 layers: course → category → [fee_type if unclear])
 _FEE_FLOW_QUESTIONS = {
     "course": {
-        "question": (
-            "I'd be happy to help with fee information! 💰\n\n"
-            "For which course are you applying?\n\n"
-            "1️⃣ **B.Tech** (Bachelor of Technology)\n"
-            "2️⃣ **M.Tech** (Master of Technology)\n"
-            "3️⃣ **MCA** (Master of Computer Applications)\n\n"
-            "Reply with the number or course name."
-        ),
+        "question": "I'd be happy to help with fee information! 💰\n\nFor which course are you applying?",
+        "clickable_options": [
+            {"label": "B.Tech (Bachelor of Technology)", "value": "B.Tech"},
+            {"label": "M.Tech (Master of Technology)", "value": "M.Tech"},
+            {"label": "MCA (Master of Computer Applications)", "value": "MCA"},
+        ],
         "options": {
             "1": "B.Tech",
             "b.tech": "B.Tech",
@@ -241,14 +235,13 @@ _FEE_FLOW_QUESTIONS = {
     },
     "category": {
         "B.Tech": {
-            "question": (
-                "Under which admission category? 📋\n\n"
-                "1️⃣ **Category A – Convenor Quota** (TG-EAPCET Rank)\n"
-                "2️⃣ **Category B – JEE Mains**\n"
-                "3️⃣ **NRI / NRI Sponsored**\n"
-                "4️⃣ **Management Quota**\n\n"
-                "Reply with the number or category name."
-            ),
+            "question": "Under which admission category? 📋",
+            "clickable_options": [
+                {"label": "Category A – Convenor Quota (TG-EAPCET Rank)", "value": "Category A"},
+                {"label": "Category B – JEE Mains", "value": "Category B"},
+                {"label": "NRI / NRI Sponsored", "value": "NRI"},
+                {"label": "Management Quota", "value": "Management"},
+            ],
             "options": {
                 "1": "Category A",
                 "category a": "Category A",
@@ -270,13 +263,12 @@ _FEE_FLOW_QUESTIONS = {
             }
         },
         "M.Tech": {
-            "question": (
-                "Under which admission category? 📋\n\n"
-                "1️⃣ **PGECET** (Convenor Quota)\n"
-                "2️⃣ **GATE** Score Based\n"
-                "3️⃣ **Management Quota**\n\n"
-                "Reply with the number or category name."
-            ),
+            "question": "Under which admission category? 📋",
+            "clickable_options": [
+                {"label": "PGECET (Convenor Quota)", "value": "PGECET"},
+                {"label": "GATE (Score Based)", "value": "GATE"},
+                {"label": "Management Quota", "value": "Management"},
+            ],
             "options": {
                 "1": "PGECET",
                 "pgecet": "PGECET",
@@ -290,12 +282,11 @@ _FEE_FLOW_QUESTIONS = {
             }
         },
         "MCA": {
-            "question": (
-                "Under which admission category? 📋\n\n"
-                "1️⃣ **ICET** (Convenor Quota)\n"
-                "2️⃣ **Management Quota**\n\n"
-                "Reply with the number or category name."
-            ),
+            "question": "Under which admission category? 📋",
+            "clickable_options": [
+                {"label": "ICET (Convenor Quota)", "value": "ICET"},
+                {"label": "Management Quota", "value": "Management"},
+            ],
             "options": {
                 "1": "ICET",
                 "icet": "ICET",
@@ -307,13 +298,12 @@ _FEE_FLOW_QUESTIONS = {
         }
     },
     "fee_type": {
-        "question": (
-            "What specific information are you looking for? 💡\n\n"
-            "1️⃣ **Tuition Fees** – yearly/semester breakdown\n"
-            "2️⃣ **Scholarships** – fee reimbursement & financial aid\n"
-            "3️⃣ **Complete Fee Structure** – all fees including tuition\n\n"
-            "Reply with the number or what you need."
-        ),
+        "question": "What specific information are you looking for? 💡",
+        "clickable_options": [
+            {"label": "Tuition Fees (yearly/semester breakdown)", "value": "tuition fees"},
+            {"label": "Scholarships (fee reimbursement & financial aid)", "value": "scholarships"},
+            {"label": "Complete Fee Structure (all fees including tuition)", "value": "complete fee structure"},
+        ],
         "options": {
             "1": "tuition fees",
             "tuition": "tuition fees",
@@ -1242,6 +1232,7 @@ class ChatResponse(BaseModel):
     session_id: str
     sources: list[str] = []
     language: str = DEFAULT_LANGUAGE  # Current language for this session
+    options: list[dict] = []  # Clickable options for guided flows
 
 
 # ── LLM caller ────────────────────────────────────────────────
@@ -1596,13 +1587,14 @@ async def chat_stream(req: ChatRequest, request: Request):
                             category_config = _FEE_FLOW_QUESTIONS["category"].get(course)
                             if category_config:
                                 ask = category_config["question"]
+                                options = category_config.get("clickable_options", [])
                                 
                                 # Stream the question
                                 words = ask.split()
                                 for word in words:
                                     yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
                                     await asyncio.sleep(0.02)
-                                yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id})}\n\n"
+                                yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id, 'options': options})}\n\n"
                                 
                                 _session_history[session_id].append({"role": "user", "content": user_msg})
                                 _session_history[session_id].append({"role": "assistant", "content": ask})
@@ -1613,11 +1605,12 @@ async def chat_stream(req: ChatRequest, request: Request):
                                 "I didn't understand that. Please choose one:\n\n"
                                 + _FEE_FLOW_QUESTIONS["course"]["question"]
                             )
+                            options = _FEE_FLOW_QUESTIONS["course"].get("clickable_options", [])
                             words = ask.split()
                             for word in words:
                                 yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
                                 await asyncio.sleep(0.02)
-                            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id})}\n\n"
+                            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id, 'options': options})}\n\n"
                             
                             _session_history[session_id].append({"role": "user", "content": user_msg})
                             _session_history[session_id].append({"role": "assistant", "content": ask})
@@ -1652,13 +1645,14 @@ async def chat_stream(req: ChatRequest, request: Request):
                                 # Ask for fee type
                                 pending["_waiting_for"] = "fee_type"
                                 ask = _FEE_FLOW_QUESTIONS["fee_type"]["question"]
+                                options = _FEE_FLOW_QUESTIONS["fee_type"].get("clickable_options", [])
                                 
                                 # Stream the question
                                 words = ask.split()
                                 for word in words:
                                     yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
                                     await asyncio.sleep(0.02)
-                                yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id})}\n\n"
+                                yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id, 'options': options})}\n\n"
                                 
                                 _session_history[session_id].append({"role": "user", "content": user_msg})
                                 _session_history[session_id].append({"role": "assistant", "content": ask})
@@ -1670,11 +1664,12 @@ async def chat_stream(req: ChatRequest, request: Request):
                                 "I didn't understand that. Please choose one:\n\n"
                                 + (category_config["question"] if category_config else "Please specify the admission category.")
                             )
+                            options = category_config.get("clickable_options", []) if category_config else []
                             words = ask.split()
                             for word in words:
                                 yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
                                 await asyncio.sleep(0.02)
-                            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id})}\n\n"
+                            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id, 'options': options})}\n\n"
                             
                             _session_history[session_id].append({"role": "user", "content": user_msg})
                             _session_history[session_id].append({"role": "assistant", "content": ask})
@@ -1705,11 +1700,12 @@ async def chat_stream(req: ChatRequest, request: Request):
                                 "I didn't understand that. Please choose one:\n\n"
                                 + _FEE_FLOW_QUESTIONS["fee_type"]["question"]
                             )
+                            options = _FEE_FLOW_QUESTIONS["fee_type"].get("clickable_options", [])
                             words = ask.split()
                             for word in words:
                                 yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
                                 await asyncio.sleep(0.02)
-                            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id})}\n\n"
+                            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id, 'options': options})}\n\n"
                             
                             _session_history[session_id].append({"role": "user", "content": user_msg})
                             _session_history[session_id].append({"role": "assistant", "content": ask})
@@ -1811,6 +1807,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                             "_waiting_for": "fee_type",
                         }
                         ask = _FEE_FLOW_QUESTIONS["fee_type"]["question"]
+                        options = _FEE_FLOW_QUESTIONS["fee_type"].get("clickable_options", [])
                         logger.info(f"Fee flow started (course+category detected) for session {session_id}")
                         
                         # Stream the question
@@ -1818,7 +1815,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                         for word in words:
                             yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
                             await asyncio.sleep(0.02)
-                        yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id})}\n\n"
+                        yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id, 'options': options})}\n\n"
                         
                         _session_history[session_id].append({"role": "user", "content": user_msg})
                         _session_history[session_id].append({"role": "assistant", "content": ask})
@@ -1835,6 +1832,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                     
                     category_config = _FEE_FLOW_QUESTIONS["category"].get(detected_course)
                     ask = category_config["question"] if category_config else "Please specify the admission category."
+                    options = category_config.get("clickable_options", []) if category_config else []
                     logger.info(f"Fee flow started (course detected) for session {session_id}: course={detected_course}")
                     
                     # Stream the question
@@ -1842,7 +1840,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                     for word in words:
                         yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
                         await asyncio.sleep(0.02)
-                    yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id})}\n\n"
+                    yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id, 'options': options})}\n\n"
                     
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
@@ -1857,6 +1855,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                         _session_pending_fee_flow[session_id]["_original_fee_type"] = detected_fee_type
                     
                     ask = _FEE_FLOW_QUESTIONS["course"]["question"]
+                    options = _FEE_FLOW_QUESTIONS["course"].get("clickable_options", [])
                     logger.info(f"Fee flow started for session {session_id}")
                     
                     # Stream the question
@@ -1864,7 +1863,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                     for word in words:
                         yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
                         await asyncio.sleep(0.02)
-                    yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id})}\n\n"
+                    yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'fee_flow', 'session_id': session_id, 'options': options})}\n\n"
                     
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
@@ -1895,13 +1894,14 @@ async def chat_stream(req: ChatRequest, request: Request):
                             category_config = _DOCUMENT_FLOW_QUESTIONS["category"].get(course)
                             if category_config:
                                 ask = category_config["question"]
+                                options = category_config.get("clickable_options", [])
                                 
                                 # Stream the question
                                 words = ask.split()
                                 for word in words:
                                     yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
                                     await asyncio.sleep(0.02)
-                                yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'document_flow', 'session_id': session_id})}\n\n"
+                                yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'document_flow', 'session_id': session_id, 'options': options})}\n\n"
                                 
                                 _session_history[session_id].append({"role": "user", "content": user_msg})
                                 _session_history[session_id].append({"role": "assistant", "content": ask})
@@ -1912,11 +1912,12 @@ async def chat_stream(req: ChatRequest, request: Request):
                                 "I didn't understand that. Please choose one:\n\n"
                                 + _DOCUMENT_FLOW_QUESTIONS["course"]["question"]
                             )
+                            options = _DOCUMENT_FLOW_QUESTIONS["course"].get("clickable_options", [])
                             words = ask.split()
                             for word in words:
                                 yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
                                 await asyncio.sleep(0.02)
-                            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'document_flow', 'session_id': session_id})}\n\n"
+                            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'document_flow', 'session_id': session_id, 'options': options})}\n\n"
                             
                             _session_history[session_id].append({"role": "user", "content": user_msg})
                             _session_history[session_id].append({"role": "assistant", "content": ask})
@@ -2030,6 +2031,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                         "_waiting_for": "course",
                     }
                     ask = _DOCUMENT_FLOW_QUESTIONS["course"]["question"]
+                    options = _DOCUMENT_FLOW_QUESTIONS["course"].get("clickable_options", [])
                     logger.info(f"Document flow started for session {session_id}")
                     
                     # Stream the question
@@ -2037,7 +2039,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                     for word in words:
                         yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
                         await asyncio.sleep(0.02)
-                    yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'document_flow', 'session_id': session_id})}\n\n"
+                    yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'document_flow', 'session_id': session_id, 'options': options})}\n\n"
                     
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
@@ -2050,6 +2052,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                     }
                     category_config = _DOCUMENT_FLOW_QUESTIONS["category"].get(detected_course)
                     ask = category_config["question"] if category_config else "Please specify the admission category."
+                    options = category_config.get("clickable_options", []) if category_config else []
                     logger.info(f"Document flow started (course detected) for session {session_id}: course={detected_course}")
                     
                     # Stream the question
@@ -2057,7 +2060,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                     for word in words:
                         yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
                         await asyncio.sleep(0.02)
-                    yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'document_flow', 'session_id': session_id})}\n\n"
+                    yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'document_flow', 'session_id': session_id, 'options': options})}\n\n"
                     
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
@@ -2371,6 +2374,7 @@ async def chat(req: ChatRequest, request: Request):
                     category_config = _FEE_FLOW_QUESTIONS["category"].get(course)
                     if category_config:
                         ask = category_config["question"]
+                        options = category_config.get("clickable_options", [])
                         _session_history[session_id].append({"role": "user", "content": user_msg})
                         _session_history[session_id].append({"role": "assistant", "content": ask})
                         return ChatResponse(
@@ -2378,6 +2382,7 @@ async def chat(req: ChatRequest, request: Request):
                             intent="fee_flow",
                             session_id=session_id,
                             language=current_language,
+                            options=options,
                         )
                 else:
                     # Invalid course response
@@ -2385,6 +2390,7 @@ async def chat(req: ChatRequest, request: Request):
                         "I didn't understand that. Please choose one:\n\n"
                         + _FEE_FLOW_QUESTIONS["course"]["question"]
                     )
+                    options = _FEE_FLOW_QUESTIONS["course"].get("clickable_options", [])
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
                     return ChatResponse(
@@ -2392,6 +2398,7 @@ async def chat(req: ChatRequest, request: Request):
                         intent="fee_flow",
                         session_id=session_id,
                         language=current_language,
+                        options=options,
                     )
             
             elif waiting_for == "category":
@@ -2450,6 +2457,7 @@ async def chat(req: ChatRequest, request: Request):
                         # Ask for fee type
                         pending["_waiting_for"] = "fee_type"
                         ask = _FEE_FLOW_QUESTIONS["fee_type"]["question"]
+                        options = _FEE_FLOW_QUESTIONS["fee_type"].get("clickable_options", [])
                         _session_history[session_id].append({"role": "user", "content": user_msg})
                         _session_history[session_id].append({"role": "assistant", "content": ask})
                         return ChatResponse(
@@ -2457,6 +2465,7 @@ async def chat(req: ChatRequest, request: Request):
                             intent="fee_flow",
                             session_id=session_id,
                             language=current_language,
+                            options=options,
                         )
                 else:
                     # Invalid category response
@@ -2465,6 +2474,7 @@ async def chat(req: ChatRequest, request: Request):
                         "I didn't understand that. Please choose one:\n\n"
                         + (category_config["question"] if category_config else "Please specify the admission category.")
                     )
+                    options = category_config.get("clickable_options", []) if category_config else []
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
                     return ChatResponse(
@@ -2472,6 +2482,7 @@ async def chat(req: ChatRequest, request: Request):
                         intent="fee_flow",
                         session_id=session_id,
                         language=current_language,
+                        options=options,
                     )
             
             elif waiting_for == "fee_type":
@@ -2528,6 +2539,7 @@ async def chat(req: ChatRequest, request: Request):
                         "I didn't understand that. Please choose one:\n\n"
                         + _FEE_FLOW_QUESTIONS["fee_type"]["question"]
                     )
+                    options = _FEE_FLOW_QUESTIONS["fee_type"].get("clickable_options", [])
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
                     return ChatResponse(
@@ -2535,6 +2547,7 @@ async def chat(req: ChatRequest, request: Request):
                         intent="fee_flow",
                         session_id=session_id,
                         language=current_language,
+                        options=options,
                     )
     
     # ── Detect NEW fee query (before document flow) ───────────
@@ -2575,6 +2588,7 @@ async def chat(req: ChatRequest, request: Request):
                     "_waiting_for": "fee_type",
                 }
                 ask = _FEE_FLOW_QUESTIONS["fee_type"]["question"]
+                options = _FEE_FLOW_QUESTIONS["fee_type"].get("clickable_options", [])
                 logger.info(f"Fee flow started (course+category detected) for session {session_id}")
                 _session_history[session_id].append({"role": "user", "content": user_msg})
                 _session_history[session_id].append({"role": "assistant", "content": ask})
@@ -2583,6 +2597,7 @@ async def chat(req: ChatRequest, request: Request):
                     intent="fee_flow",
                     session_id=session_id,
                     language=current_language,
+                    options=options,
                 )
         elif detected_course:
             # Has course but no category - ask for category
@@ -2596,6 +2611,7 @@ async def chat(req: ChatRequest, request: Request):
             
             category_config = _FEE_FLOW_QUESTIONS["category"].get(detected_course)
             ask = category_config["question"] if category_config else "Please specify the admission category."
+            options = category_config.get("clickable_options", []) if category_config else []
             logger.info(f"Fee flow started (course detected) for session {session_id}: course={detected_course}")
             _session_history[session_id].append({"role": "user", "content": user_msg})
             _session_history[session_id].append({"role": "assistant", "content": ask})
@@ -2604,6 +2620,7 @@ async def chat(req: ChatRequest, request: Request):
                 intent="fee_flow",
                 session_id=session_id,
                 language=current_language,
+                options=options,
             )
         else:
             # No course detected - start fee flow from beginning
@@ -2615,6 +2632,7 @@ async def chat(req: ChatRequest, request: Request):
                 _session_pending_fee_flow[session_id]["_original_fee_type"] = detected_fee_type
             
             ask = _FEE_FLOW_QUESTIONS["course"]["question"]
+            options = _FEE_FLOW_QUESTIONS["course"].get("clickable_options", [])
             logger.info(f"Fee flow started for session {session_id}")
             _session_history[session_id].append({"role": "user", "content": user_msg})
             _session_history[session_id].append({"role": "assistant", "content": ask})
@@ -2623,6 +2641,7 @@ async def chat(req: ChatRequest, request: Request):
                 intent="fee_flow",
                 session_id=session_id,
                 language=current_language,
+                options=options,
             )
 
     # ── Check if session is in document flow ──────────────────
@@ -2646,6 +2665,7 @@ async def chat(req: ChatRequest, request: Request):
                     category_config = _DOCUMENT_FLOW_QUESTIONS["category"].get(course)
                     if category_config:
                         ask = category_config["question"]
+                        options = category_config.get("clickable_options", [])
                         _session_history[session_id].append({"role": "user", "content": user_msg})
                         _session_history[session_id].append({"role": "assistant", "content": ask})
                         return ChatResponse(
@@ -2653,6 +2673,7 @@ async def chat(req: ChatRequest, request: Request):
                             intent="document_flow",
                             session_id=session_id,
                             language=current_language,
+                            options=options,
                         )
                 else:
                     # Invalid course response
@@ -2660,6 +2681,7 @@ async def chat(req: ChatRequest, request: Request):
                         "I didn't understand that. Please choose one:\n\n"
                         + _DOCUMENT_FLOW_QUESTIONS["course"]["question"]
                     )
+                    options = _DOCUMENT_FLOW_QUESTIONS["course"].get("clickable_options", [])
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
                     return ChatResponse(
@@ -2667,6 +2689,7 @@ async def chat(req: ChatRequest, request: Request):
                         intent="document_flow",
                         session_id=session_id,
                         language=current_language,
+                        options=options,
                     )
             
             elif waiting_for == "category":
@@ -2722,6 +2745,7 @@ async def chat(req: ChatRequest, request: Request):
                         "I didn't understand that. Please choose one:\n\n"
                         + (category_config["question"] if category_config else "Please specify the admission category.")
                     )
+                    options = category_config.get("clickable_options", []) if category_config else []
                     _session_history[session_id].append({"role": "user", "content": user_msg})
                     _session_history[session_id].append({"role": "assistant", "content": ask})
                     return ChatResponse(
@@ -2729,6 +2753,7 @@ async def chat(req: ChatRequest, request: Request):
                         intent="document_flow",
                         session_id=session_id,
                         language=current_language,
+                        options=options,
                     )
 
     # ── Check if session is awaiting a clarifying answer ──────
@@ -3242,6 +3267,7 @@ async def chat(req: ChatRequest, request: Request):
                 "_waiting_for": "course",
             }
             ask = _DOCUMENT_FLOW_QUESTIONS["course"]["question"]
+            options = _DOCUMENT_FLOW_QUESTIONS["course"].get("clickable_options", [])
             logger.info(f"Document flow started for session {session_id}")
             
             _session_history[session_id].append({"role": "user", "content": user_msg})
@@ -3252,6 +3278,7 @@ async def chat(req: ChatRequest, request: Request):
                 intent="document_flow",
                 session_id=session_id,
                 language=current_language,
+                options=options,
             )
         else:
             # Has course but no category - start at category question
@@ -3261,6 +3288,7 @@ async def chat(req: ChatRequest, request: Request):
             }
             category_config = _DOCUMENT_FLOW_QUESTIONS["category"].get(detected_course)
             ask = category_config["question"] if category_config else "Please specify the admission category."
+            options = category_config.get("clickable_options", []) if category_config else []
             logger.info(f"Document flow started (course detected) for session {session_id}: course={detected_course}")
             
             _session_history[session_id].append({"role": "user", "content": user_msg})
@@ -3271,6 +3299,7 @@ async def chat(req: ChatRequest, request: Request):
                 intent="document_flow",
                 session_id=session_id,
                 language=current_language,
+                options=options,
             )
 
     # Classify
