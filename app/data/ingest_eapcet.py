@@ -190,7 +190,7 @@ def extract_special_pages(
             t3 = page3.extract_tables()
             if t3:
                 table = t3[0]
-                print(f"  Page 3: {len(table)} rows × {len(table[0])} cols")
+                print(f"  Page 3: {len(table)} rows x {len(table[0])} cols")
                 records.extend(
                     _extract_special_table(table, PAGE3_SPECIAL_MAP, year, skip_header=3)
                 )
@@ -201,7 +201,7 @@ def extract_special_pages(
             t4 = page4.extract_tables()
             if t4:
                 table = t4[0]
-                print(f"  Page 4: {len(table)} rows × {len(table[0])} cols")
+                print(f"  Page 4: {len(table)} rows x {len(table[0])} cols")
                 records.extend(
                     _extract_special_table(table, PAGE4_SPECIAL_MAP, year, skip_header=0)
                 )
@@ -285,19 +285,19 @@ def extract_page(pdf_path: str | Path, page_num: int = 0, year: int = 2025) -> l
 
     with pdfplumber.open(str(pdf_path)) as pdf:
         if page_num >= len(pdf.pages):
-            print(f"❌  PDF has only {len(pdf.pages)} page(s), cannot read page {page_label}")
+            print(f"[ERROR] PDF has only {len(pdf.pages)} page(s), cannot read page {page_label}")
             return []
 
         page = pdf.pages[page_num]
         tables = page.extract_tables()
 
         if not tables:
-            print(f"❌  No tables found on page {page_label}")
+            print(f"[ERROR] No tables found on page {page_label}")
             return []
 
         # Find the largest table (by row count) - handles PDFs with header tables
         table = max(tables, key=lambda t: len(t) if t else 0)
-        print(f"  Page {page_label}: Table has {len(table)} rows × {len(table[0])} columns")
+        print(f"  Page {page_label}: Table has {len(table)} rows x {len(table[0])} columns")
 
         # Skip header rows (first 3 rows typically: title, category, gender, First/Last)
         # Find the first data row by looking for a branch name
@@ -327,25 +327,32 @@ def extract_page(pdf_path: str | Path, page_num: int = 0, year: int = 2025) -> l
                 if last_col >= len(cells):
                     continue
 
-                rank = _parse_rank(cells[last_col])
+                first_col = last_col - 1
+                first_rank_val = _parse_rank(cells[first_col]) if first_col >= 0 and first_col < len(cells) else None
+                last_rank_val  = _parse_rank(cells[last_col])
+
                 # If Last rank is "--" / "-", fall back to First rank
                 # (means only one student admitted, so First = Last)
-                if rank is None:
-                    first_col = last_col - 1
-                    if first_col >= 0:
-                        rank = _parse_rank(cells[first_col])
-                if rank is None:
+                if last_rank_val is None and first_rank_val is not None:
+                    last_rank_val = first_rank_val
+
+                if last_rank_val is None:
                     continue
 
-                records.append({
-                    "branch": branch,
-                    "category": category,
-                    "gender": gender,
-                    "cutoff_rank": rank,
-                    "year": year,
-                    "round": 1,
-                    "quota": "Convenor",
-                })
+                record: dict = {
+                    "branch":      branch,
+                    "category":    category,
+                    "gender":      gender,
+                    "cutoff_rank": last_rank_val,   # closing / last rank
+                    "last_rank":   last_rank_val,   # explicit alias
+                    "year":        year,
+                    "round":       1,
+                    "quota":       "Convenor",
+                }
+                if first_rank_val is not None:
+                    record["first_rank"] = first_rank_val
+
+                records.append(record)
 
     return records
 
@@ -390,7 +397,7 @@ def upload_to_firestore(records: list[dict], clear_existing: bool = False) -> in
             batch = db.batch()
 
     batch.commit()
-    print(f"✅  Uploaded {count} cutoff records to '{COLLECTION}' collection")
+    print(f"[OK] Uploaded {count} cutoff records to '{COLLECTION}' collection")
     return count
 
 
@@ -429,20 +436,20 @@ def main():
         do_special = True
 
     for pg in regular_pages:
-        print(f"\n📄  Reading page {pg + 1} of: {args.pdf}")
+        print(f"\n[PDF] Reading page {pg + 1} of: {args.pdf}")
         records = extract_page(args.pdf, page_num=pg, year=args.year)
         all_records.extend(records)
 
     if do_special:
-        print(f"\n📄  Reading pages 3-4 (special categories) of: {args.pdf}")
+        print(f"\n[PDF] Reading pages 3-4 (special categories) of: {args.pdf}")
         records = extract_special_pages(args.pdf, year=args.year)
         all_records.extend(records)
 
     if not all_records:
-        print("\n❌  No records extracted.")
+        print("\n[ERROR] No records extracted.")
         return
 
-    print(f"\n📊  Extracted {len(all_records)} records total. Sample:")
+    print(f"\n[DATA] Extracted {len(all_records)} records total. Sample:")
     for r in all_records[:8]:
         ph = f" PH:{r['ph_type']}" if r.get("ph_type") else ""
         print(
@@ -453,7 +460,7 @@ def main():
         print(f"  ... and {len(all_records) - 8} more")
 
     if args.dry_run:
-        print("\n🔍  Dry run — all extracted records:")
+        print("\n[DRY-RUN] All extracted records:")
         for i, r in enumerate(all_records, 1):
             ph = f" PH:{r['ph_type']}" if r.get("ph_type") else ""
             print(

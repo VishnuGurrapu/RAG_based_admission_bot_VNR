@@ -48,7 +48,9 @@ except Exception as e:
 class CutoffResult:
     eligible: Optional[bool] = None
     found: Optional[bool] = None
-    cutoff_rank: Optional[int] = None
+    cutoff_rank: Optional[int] = None   # closing / last rank
+    first_rank: Optional[int] = None   # opening / first rank
+    last_rank: Optional[int] = None    # alias for cutoff_rank (closing rank)
     branch: Optional[str] = None
     category: Optional[str] = None
     year: Optional[int] = None
@@ -221,6 +223,45 @@ def _normalise_category(raw: str) -> str:
     return mapping.get(raw.strip().lower(), raw.strip().upper())
 
 
+def _resolve_rank_fields(row: dict) -> None:
+    """
+    Normalise rank field names in-place so every row exposes:
+      - first_rank  (opening rank)  — None when not stored in Firestore
+      - last_rank   (closing/cutoff rank)
+      - cutoff_rank (alias for last_rank, used for eligibility checks)
+
+    Firestore documents may store these under several historic field names.
+    This function accepts any combination and always fills last_rank /
+    cutoff_rank, but leaves first_rank as None when the source data does
+    not contain it (avoids duplicating the closing rank into the opening rank).
+    """
+    # ── Resolve last_rank (closing/cutoff rank) ───────────────
+    # Priority: last_rank field > cutoff_rank field > first_rank (last resort)
+    if "last_rank" not in row:
+        if "cutoff_rank" in row:
+            row["last_rank"] = row["cutoff_rank"]
+        elif "first_rank" in row:
+            # Only one rank present — treat it as the closing rank
+            row["last_rank"] = row["first_rank"]
+
+    # ── Resolve cutoff_rank (alias for last_rank) ───────────────
+    if "cutoff_rank" not in row:
+        row["cutoff_rank"] = row.get("last_rank")
+
+    # ── first_rank: only set when explicitly provided in the document ───────
+    # Do NOT fall back to cutoff_rank — that causes the "same value" bug.
+    # Callers should check `row.get("first_rank")` and handle None gracefully.
+
+    # ── Ensure all stored values are proper integers or None ──────────────
+    for fld in ("first_rank", "last_rank", "cutoff_rank"):
+        val = row.get(fld)
+        if val is not None:
+            try:
+                row[fld] = int(val)
+            except (TypeError, ValueError):
+                row[fld] = None
+
+
 def get_cutoff(
     branch: str,
     category: str,
@@ -262,7 +303,12 @@ def get_cutoff(
     # Build Firestore query with compound filters
     query = query.where(filter=FieldFilter("branch", "==", branch))
     query = query.where(filter=FieldFilter("category", "==", category))
-    query = query.where(filter=FieldFilter("gender", "==", gender))
+    # Only filter by gender when a specific gender is requested.
+    # "Any" / None means "show both Boys and Girls" — omitting the filter
+    # returns all matching rows so the caller can pick the best one.
+    _gender_specific = gender and gender not in ("Any", "ALL")
+    if _gender_specific:
+        query = query.where(filter=FieldFilter("gender", "==", gender))
     query = query.where(filter=FieldFilter("quota", "==", quota))
 
     if ph_type:
@@ -285,7 +331,8 @@ def get_cutoff(
         alt_query = db.collection(COLLECTION)
         alt_query = alt_query.where(filter=FieldFilter("branch", "==", branch))
         alt_query = alt_query.where(filter=FieldFilter("caste", "==", category))
-        alt_query = alt_query.where(filter=FieldFilter("gender", "==", gender))
+        if _gender_specific:
+            alt_query = alt_query.where(filter=FieldFilter("gender", "==", gender))
         alt_query = alt_query.where(filter=FieldFilter("quota", "==", quota))
         if year:
             alt_query = alt_query.where(filter=FieldFilter("year", "==", year))
@@ -295,10 +342,16 @@ def get_cutoff(
             # Normalize: map old field names to new ones
             if "caste" in d and "category" not in d:
                 d["category"] = d["caste"]
-            if "cutoff_rank" not in d:
-                d["cutoff_rank"] = d.get("last_rank") or d.get("first_rank")
+            _resolve_rank_fields(d)
             if d.get("cutoff_rank") is not None:
                 rows.append(d)
+
+    # Normalize first_rank / last_rank / cutoff_rank for every row
+    for r in rows:
+        _resolve_rank_fields(r)
+
+    # ── Only keep rows that have a valid cutoff_rank ───────────────
+    rows = [r for r in rows if r.get("cutoff_rank") is not None]
 
     # Sort: latest year first, then latest round
     rows.sort(key=lambda r: (r.get("year", 0), r.get("round", 0)), reverse=True)
@@ -310,89 +363,138 @@ def get_cutoff(
             year=year,
             round=round_num,
             message=(
-                f"No cutoff data found for {branch} / {category}"
-                + (f" / {year}" if year else "")
+                f"Data not found in Firestore for the specified filters: "
+                f"**{branch}** / **{category}**"
+                + (f" / **{year}**" if year else "")
                 + (f" / Round {round_num}" if round_num else "")
-                + ". The data may not be available yet."
+                + (f" / **{gender}**" if _gender_specific else "")
+                + f" / {quota} quota."
             ),
         )
 
-    best = rows[0]
+    dept_url = _get_department_url(branch)
+    dept_link = f"\n\n🔗 **Explore {branch} Department:** {dept_url}" if dept_url else ""
 
-    # If no specific year requested and show_trend=True, show ALL available years with analysis
+    # ── Trend mode: show ALL available years with trend analysis ──
     if not year and show_trend and len(set(r.get("year") for r in rows)) > 1:
-        # Group by year and build a year-wise comparison
-        years_seen = {}
+        years_seen: dict[int, dict] = {}
         for r in rows:
             y = r.get("year")
             if y and y not in years_seen:
                 years_seen[y] = r
         sorted_years = sorted(years_seen.keys())
 
-        year_lines = []
-        ranks_list = []
+        year_lines: list[str] = []
+        ranks_list: list[int] = []
         for y in sorted_years:
             r = years_seen[y]
-            rank = r.get("cutoff_rank", 0)
-            year_lines.append(f"• **{y}**: Closing rank **{rank:,}**")
-            ranks_list.append(rank)
+            cr = r.get("cutoff_rank")
+            lr = r.get("last_rank") if r.get("last_rank") is not None else cr
+            fr = r.get("first_rank")   # None when not stored in Firestore
 
-        # Analyze trend
+            if fr is not None and lr is not None and fr != lr:
+                year_lines.append(f"• **{y}**: First Rank **{fr:,}** | Last Rank (Cutoff) **{lr:,}**")
+            elif lr is not None:
+                year_lines.append(f"• **{y}**: Last Rank (Cutoff) **{lr:,}**")
+            ranks_list.append(cr or 0)
+
         trend_analysis = ""
         if len(ranks_list) >= 2:
-            first_rank = ranks_list[0]
-            last_rank = ranks_list[-1]
-            diff = last_rank - first_rank
-            pct_change = (diff / first_rank * 100) if first_rank > 0 else 0
-            
+            pct_change = ((ranks_list[-1] - ranks_list[0]) / ranks_list[0] * 100) if ranks_list[0] > 0 else 0
             if abs(pct_change) < 5:
                 trend_analysis = (
-                    f"\n\n📊 **Trend Analysis:** The cutoff has remained relatively stable over the years "
+                    f"\n\n📊 **Trend Analysis:** The cutoff has remained relatively stable "
                     f"(~{abs(pct_change):.1f}% change). This branch maintains consistent demand."
                 )
-            elif diff < 0:  # Rank decreased (became more competitive)
+            elif pct_change < 0:
                 trend_analysis = (
-                    f"\n\n📊 **Trend Analysis:** The cutoff rank has **decreased by {abs(pct_change):.1f}%** "
-                    f"from {sorted_years[0]} to {sorted_years[-1]}, indicating **rising competition**. "
-                    f"The branch is becoming more sought-after. Plan accordingly and consider backup options."
+                    f"\n\n📊 **Trend Analysis:** Closing rank decreased by **{abs(pct_change):.1f}%** "
+                    f"({sorted_years[0]}→{sorted_years[-1]}) — rising competition."
                 )
-            else:  # Rank increased (became less competitive)
+            else:
                 trend_analysis = (
-                    f"\n\n📊 **Trend Analysis:** The cutoff rank has **increased by {pct_change:.1f}%** "
-                    f"from {sorted_years[0]} to {sorted_years[-1]}, indicating **improving chances**. "
-                    f"Competition has eased slightly, making admission more accessible than before."
+                    f"\n\n📊 **Trend Analysis:** Closing rank increased by **{pct_change:.1f}%** "
+                    f"({sorted_years[0]}→{sorted_years[-1]}) — improving admission chances."
                 )
 
-        # Add department URL suggestion
-        dept_url = _get_department_url(branch)
-        dept_link = f"\n\n🔗 **Explore {branch} Department:** {dept_url}" if dept_url else ""
-        
         message = (
-            f"Here are the cutoff ranks for **{branch}** under **{category}** "
-            f"category ({gender}, {quota} quota) across all available years:\n\n"
+            f"Cutoff ranks for **{branch}** | **{category}** | {quota} quota"
+            + (f" | {gender}" if _gender_specific else "")
+            + " across all available years:\n\n"
             + "\n".join(year_lines)
             + trend_analysis
             + dept_link
-            + "\n\n⚠️ _These are based on previous year data and cutoffs may vary._"
-        )
-    else:
-        # Show only the latest year (default behavior)
-        year_label = f"**{best['year']}**" if best.get('year') else "the latest year"
-        
-        # Add department URL suggestion
-        dept_url = _get_department_url(branch)
-        dept_link = f"\n\n🔗 **Explore {branch} Department:** {dept_url}" if dept_url else ""
-        
-        message = (
-            f"The closing cutoff rank for **{best['branch']}** under **{best['category']}** "
-            f"category in {year_label}, Round {best.get('round', 1)} "
-            f"({best['quota']} quota) is **{best['cutoff_rank']:,}**."
-            + dept_link
-            + "\n\n⚠️ _This is based on previous year data and cutoffs may vary._"
+            + "\n\n⚠️ _Based on previous year data. Cutoffs may vary._"
         )
 
+        best = rows[0]
+        return CutoffResult(
+            cutoff_rank=best.get("cutoff_rank"),
+            first_rank=best.get("first_rank"),
+            last_rank=best.get("last_rank", best.get("cutoff_rank")),
+            branch=best.get("branch", branch),
+            category=best.get("category", category),
+            year=best.get("year"),
+            round=best.get("round"),
+            gender=best.get("gender", gender),
+            quota=best.get("quota", quota),
+            message=message,
+            all_results=rows,
+        )
+
+    # ── Standard mode ────────────────────────────────────────────────────
+    # Each attribute is on its own separate line (\n → <br> in the widget).
+    # No list-marker prefixes — they can collapse inside host-page CSS.
+    #
+    # Determine target year (latest available if not specified)
+    target_year = year if year else max(r.get("year", 0) for r in rows)
+    year_rows = [r for r in rows if r.get("year") == target_year]
+
+    # Determine which rounds to show (all rounds sorted ascending, or the
+    # specified round only)
+    if round_num:
+        display_rows = [r for r in year_rows if r.get("round") == round_num]
+    else:
+        display_rows = year_rows
+
+    # Sort by round ascending, then gender (Boys before Girls)
+    display_rows.sort(key=lambda r: (r.get("round", 0), r.get("gender", "")))
+
+    if not display_rows:
+        display_rows = rows  # fallback: show whatever we have
+
+    blocks: list[str] = []
+
+    for r in display_rows:
+        if _gender_specific and r.get("gender") != gender:
+            continue
+
+        fr = r.get("first_rank")   # None when not stored in Firestore
+        lr = r.get("last_rank") if r.get("last_rank") is not None else r.get("cutoff_rank")
+
+        fr_str = f"{fr:,}" if fr is not None else "Not available (re-ingest PDF to populate)"
+        lr_str = f"{lr:,}" if lr is not None else "—"
+
+        block = (
+            f"**Branch:** {r.get('branch', branch)}\n"
+            f"**Category:** {r.get('category', category)}\n"
+            f"**Gender:** {r.get('gender', '—')}\n"
+            f"**Quota:** {r.get('quota', quota)}\n"
+            f"**Round:** {r.get('round', '—')}\n"
+            f"**First Rank (Opening):** {fr_str}\n"
+            f"**Last Rank (Closing):** {lr_str}"
+        )
+        blocks.append(block)
+
+    separator = "\n\n" + "─" * 36 + "\n\n"
+    header = f"**EAPCET Cutoff Ranks — {target_year}**\n\n"
+    message = header + separator.join(blocks) + dept_link + "\n\n⚠️ _Based on previous year data. Cutoffs may vary._"
+
+    best = display_rows[0]
     return CutoffResult(
-        cutoff_rank=best["cutoff_rank"],
+        cutoff_rank=best.get("cutoff_rank"),
+        first_rank=best.get("first_rank"),
+        last_rank=best.get("last_rank") if best.get("last_rank") is not None else best.get("cutoff_rank"),
         branch=best.get("branch", branch),
         category=best.get("category", category),
         year=best.get("year"),
@@ -436,40 +538,79 @@ def check_eligibility(
     dept_url = _get_department_url(result.branch)
     dept_link = f"\n\n🔗 **Explore {result.branch} Department:** {dept_url}" if dept_url else ""
 
+    closing = result.cutoff_rank
+    opening = result.first_rank
+    rank_range = (
+        f"First Rank: **{opening:,}** | Last Rank (Cutoff): **{closing:,}**"
+        if opening and opening != closing
+        else f"Cutoff (Closing) Rank: **{closing:,}**"
+    )
+
     if result.eligible:
         result.message = (
-            f"With a rank of **{rank:,}**, you are **eligible** for "
-            f"{result.branch} under {result.category} category ({result.gender}) "
-            f"based on Year {result.year}, Round {result.round} ({result.quota} quota) cutoffs. "
-            f"The closing rank was **{result.cutoff_rank:,}**."
+            f"✅ With a rank of **{rank:,}**, you are **eligible** for "
+            f"**{result.branch}** under **{result.category}** ({result.gender}) "
+            f"— Year {result.year}, Round {result.round}, {result.quota} quota.\n\n"
+            f"{rank_range}"
             + dept_link
-            + "\n\n⚠️ _This is based on previous year data. Actual cutoffs may vary this year._"
+            + "\n\n⚠️ _Based on previous year data. Actual cutoffs may vary._"
         )
     else:
         result.message = (
-            f"With a rank of **{rank:,}**, you are **not eligible** for "
-            f"{result.branch} under {result.category} category ({result.gender}) "
-            f"based on Year {result.year}, Round {result.round} ({result.quota} quota) cutoffs. "
-            f"The closing rank was **{result.cutoff_rank:,}**. "
-            f"Your rank needs to be ≤ {result.cutoff_rank:,} for this seat."
+            f"❌ With a rank of **{rank:,}**, you are **not eligible** for "
+            f"**{result.branch}** under **{result.category}** ({result.gender}) "
+            f"— Year {result.year}, Round {result.round}, {result.quota} quota.\n\n"
+            f"{rank_range}\n"
+            f"Your rank must be ≤ {closing:,} to qualify."
             + dept_link
-            + "\n\n⚠️ _This is based on previous year data. Actual cutoffs may vary this year._"
+            + "\n\n⚠️ _Based on previous year data. Actual cutoffs may vary._"
         )
 
     return result
 
 
 def list_branches() -> list[str]:
-    """Return all distinct branches in Firestore."""
+    """Return all distinct, normalised B.Tech branches in Firestore.
+
+    Raw Firestore values are normalised (e.g. CIVIL → CIV, MECH → ME)
+    and deduplicated before being returned.  Non-branch strings such as
+    establishment years ("Estd.1995") are excluded via a whitelist of
+    known valid branch codes.
+    """
+    # Canonical set of valid B.Tech branch codes offered at VNRVJIET.
+    # Any Firestore value that does NOT normalise to one of these is silently
+    # ignored so that garbage values (e.g. "Estd.1995") never reach users.
+    VALID_BRANCHES: set[str] = {
+        "CSE", "ECE", "EEE", "IT", "ME", "CIV",
+        "CSE-CSM",   # AI & ML
+        "CSE-CSD",   # Data Science
+        "CSE-CSC",   # Cyber Security
+        "CSE-CSO",   # IoT
+        "CSB",       # CS & Business Systems
+        "AID",       # AI & Data Science
+        "AUT",       # Automobile Engineering
+        "BIO",       # Biotechnology
+        "EIE",       # Electronics & Instrumentation
+        "RAI",       # Robotics & AI
+        "VLSI",      # VLSI Design
+    }
+
     db = get_db()
     if db is None:
         logger.warning("Firestore not available. Returning default branch list.")
-        # Return common branches as fallback
-        return ["CSE", "ECE", "EEE", "ME", "CIV", "IT", "CSE-CSM", "AID"]
-    
+        return sorted(VALID_BRANCHES)
+
     docs = db.collection(COLLECTION).stream()
-    branches = sorted({doc.to_dict().get("branch", "") for doc in docs})
-    return [b for b in branches if b]
+    normalised: set[str] = set()
+    for doc in docs:
+        raw = doc.to_dict().get("branch", "")
+        if not raw:
+            continue
+        nb = _normalise_branch(raw)
+        if nb in VALID_BRANCHES:
+            normalised.add(nb)
+
+    return sorted(normalised)
 
 
 def list_categories() -> list[str]:
@@ -630,52 +771,62 @@ def format_cutoffs_table(
     str : Formatted message with cutoff data
     """
     if not cutoffs:
-        return "No cutoff data found for the specified criteria. The data may not be available yet."
-    
+        return "Data not found in Firestore for the specified filters."
+
+    # Normalise rank fields on every row (idempotent)
+    for row in cutoffs:
+        _resolve_rank_fields(row)
+
     # Group by branch for better readability
-    by_branch = {}
+    by_branch: dict[str, list[dict]] = {}
     for row in cutoffs[:max_rows]:
         branch = row.get("branch", "Unknown")
         if branch not in by_branch:
             by_branch[branch] = []
         by_branch[branch].append(row)
-    
-    lines = [f"## {title}\n"]
-    
-    for branch, records in by_branch.items():
-        lines.append(f"\n### {branch}")
-        
+
+    blocks: list[str] = []
+
+    for branch_name, records in by_branch.items():
         # Group by year within branch
-        by_year = {}
+        by_year: dict = {}
         for rec in records:
-            year = rec.get("year", "N/A")
-            if year not in by_year:
-                by_year[year] = []
-            by_year[year].append(rec)
-        
-        for year in sorted(by_year.keys(), reverse=True):
-            year_records = by_year[year]
-            lines.append(f"\n**Year {year}:**")
-            
-            for rec in year_records:
-                category = rec.get("category", "N/A")
-                gender = rec.get("gender", "N/A")
-                rank = rec.get("cutoff_rank", rec.get("last_rank", "N/A"))
-                round_num = rec.get("round", "N/A")
-                quota = rec.get("quota", "Convenor")
-                
-                if isinstance(rank, (int, float)):
-                    rank_str = f"{int(rank):,}"
-                else:
-                    rank_str = str(rank)
-                
-                lines.append(
-                    f"- **{category}** ({gender}) - Round {round_num}: **{rank_str}** ({quota} quota)"
+            y = rec.get("year", "N/A")
+            if y not in by_year:
+                by_year[y] = []
+            by_year[y].append(rec)
+
+        for year_key in sorted(by_year.keys(), reverse=True):
+            year_records = by_year[year_key]
+
+            for rec in sorted(year_records, key=lambda r: (r.get("round", 0), r.get("gender", ""))):
+                cat = rec.get("category", "—")
+                gen = rec.get("gender", "—")
+                rnd = rec.get("round", "—")
+                qt  = rec.get("quota", "Convenor")
+                fr  = rec.get("first_rank")
+                lr  = rec.get("last_rank") if rec.get("last_rank") is not None else rec.get("cutoff_rank")
+
+                fr_str = f"{fr:,}" if isinstance(fr, int) else "Not available (re-ingest PDF to populate)"
+                lr_str = f"{lr:,}" if isinstance(lr, int) else "—"
+
+                block = (
+                    f"**Branch:** {branch_name}\n"
+                    f"**Category:** {cat}\n"
+                    f"**Gender:** {gen}\n"
+                    f"**Quota:** {qt}\n"
+                    f"**Round:** {rnd}\n"
+                    f"**Year:** {year_key}\n"
+                    f"**First Rank (Opening):** {fr_str}\n"
+                    f"**Last Rank (Closing):** {lr_str}"
                 )
-    
+                blocks.append(block)
+
+    separator = "\n\n" + "─" * 36 + "\n\n"
+    output = f"**{title}**\n\n" + separator.join(blocks[:max_rows])
+
     if len(cutoffs) > max_rows:
-        lines.append(f"\n\n_Showing first {max_rows} of {len(cutoffs)} results._")
-    
-    lines.append("\n\n⚠️ _These are based on previous year data and cutoffs may vary._")
-    
-    return "\n".join(lines)
+        output += f"\n\n_Showing first {max_rows} of {len(cutoffs)} results._"
+
+    output += "\n\n⚠️ _Based on previous year data. Cutoffs may vary._"
+    return output

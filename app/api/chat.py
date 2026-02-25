@@ -105,18 +105,30 @@ _session_pending_websearch: dict[str, str] = {}
 # before running RAG/LLM for broad/vague informational topics.
 _session_pending_clarification: dict[str, dict] = {}
 
-# Cutoff flow: only needs branch, category, gender (shows cutoff ranks)
+# ── Required Documents pipeline state (per-session) ───────
+# Tracks the documents pipeline: what step we are on.
+# Keys: _waiting_for ("program"), program (B.Tech/M.Tech/MCA)
+_session_documents_data: dict[str, dict] = {}
+
+# ── Active pipeline tracker (per-session) ─────────────────
+# Tracks the currently active pipeline to enforce isolation.
+# Values: "cutoff", "eligibility", "documents", "contact", "clarification", or None
+_session_active_pipeline: dict[str, str | None] = {}
+
+# Cutoff flow: collects branch → category → gender → year, then queries DB
 _CUTOFF_QUESTIONS = [
     ("branch", "Which **branch(es)** are you interested in? You can pick one, multiple (e.g. CSE, ECE, IT), or say **all**.\n\n{branches}"),
     ("category", "What is your **category / caste**?\n\n(e.g., OC, BC-A, BC-B, BC-C, BC-D, SC, ST, EWS)"),
     ("gender", "Are you a **Boy** or a **Girl**?"),
+    ("year", "Which **year**'s cutoff data would you like?\n\n(e.g., **2022**, **2023**, **2024**) — or reply **latest** for the most recent data."),
 ]
 
-# Eligibility flow: needs branch, category, gender + rank (checks if eligible)
+# Eligibility flow: collects branch → category → gender → year → rank, then queries DB
 _ELIGIBILITY_QUESTIONS = [
     ("branch", "Which **branch(es)** are you interested in? You can pick one, multiple (e.g. CSE, ECE, IT), or say **all**.\n\n{branches}"),
     ("category", "What is your **category / caste**?\n\n(e.g., OC, BC-A, BC-B, BC-C, BC-D, SC, ST, EWS)"),
     ("gender", "Are you a **Boy** or a **Girl**?"),
+    ("year", "Which **year**'s cutoff data would you like?\n\n(e.g., **2022**, **2023**, **2024**) — or reply **latest** for the most recent data."),
     ("rank", "What is your **EAPCET rank**?"),
 ]
 
@@ -339,6 +351,91 @@ _CLARIFICATION_CATEGORIES: dict[str, dict] = {
     },
 }
 
+# ── Required Documents pipeline data ─────────────────────────
+# RAG query templates per program – used to build the retrieval query
+# so the LLM answers from the actual ingested knowledge base, not hardcoded text.
+_DOCUMENTS_RAG_QUERIES: dict[str, str] = {
+    "B.Tech": "What documents are required for B.Tech admission at VNRVJIET?",
+    "M.Tech": "What documents are required for M.Tech admission at VNRVJIET?",
+    "MCA": "What documents are required for MCA admission at VNRVJIET?",
+}
+
+# Keywords that strongly indicate user is asking about required documents
+_REQUIRED_DOCUMENTS_KEYWORDS: list[str] = [
+    "required documents", "required document",
+    "documents required", "document required",
+    "what documents", "which documents", "documents needed",
+    "documents for admission", "document list",
+    "certificates required", "certificates needed",
+    "what certificate", "which certificate",
+    "admission documents", "documents to bring",
+    "documents to submit", "bring documents",
+]
+
+
+def _detect_required_documents_intent(message: str) -> bool:
+    """
+    Detect if the user is asking about required documents for admission.
+    Returns True when the message clearly targets the documents pipeline.
+    """
+    msg_lower = message.lower().strip()
+    # Exact / substring match on strong document phrases
+    if any(kw in msg_lower for kw in _REQUIRED_DOCUMENTS_KEYWORDS):
+        return True
+    # Two-word shorthand: "required documents" (already covered above)
+    # Also catch bare "documents" when it is the whole message
+    if msg_lower in ("documents", "document", "docs", "certificates"):
+        return True
+    return False
+
+
+def _resolve_program_selection(user_reply: str) -> str | None:
+    """
+    Map the user's response to a program name for the documents pipeline.
+    Returns "B.Tech", "M.Tech", or "MCA", or None if unclear.
+    """
+    r = user_reply.lower().strip()
+    if r in ("1", "b.tech", "btech", "be", "b.e", "bachelor", "b tech"):
+        return "B.Tech"
+    if r in ("2", "m.tech", "mtech", "me", "m.e", "master", "m tech", "masters"):
+        return "M.Tech"
+    if r in ("3", "mca", "m.c.a", "master of computer applications"):
+        return "MCA"
+    # Numeric prefix in longer reply
+    if user_reply.strip().startswith("1"):
+        return "B.Tech"
+    if user_reply.strip().startswith("2"):
+        return "M.Tech"
+    if user_reply.strip().startswith("3"):
+        return "MCA"
+    return None
+
+
+def _clear_other_pipelines(session_id: str, keep: str | None = None) -> None:
+    """
+    Clear all pipeline state objects for a session EXCEPT the one named in `keep`.
+    Enforces pipeline isolation: no state from a previous pipeline bleeds into the new one.
+
+    Args:
+        session_id: The session to clean up.
+        keep: Pipeline name to preserve ("cutoff", "documents", "contact",
+              "clarification", "websearch"). Pass None to clear everything.
+    """
+    if keep != "cutoff":
+        _session_cutoff_data.pop(session_id, None)
+        _session_pending_intent.pop(session_id, None)
+        _session_last_cutoff.pop(session_id, None)
+    if keep != "documents":
+        _session_documents_data.pop(session_id, None)
+    if keep != "contact":
+        _session_contact_data.pop(session_id, None)
+    if keep != "clarification":
+        _session_pending_clarification.pop(session_id, None)
+    if keep != "websearch":
+        _session_pending_websearch.pop(session_id, None)
+    # Update active pipeline tracker
+    _session_active_pipeline[session_id] = keep
+
 
 def _check_rate_limit(ip: str) -> None:
     now = time.time()
@@ -439,6 +536,10 @@ def _is_topic_change(message: str, current_flow: str = None) -> bool:
     if any(phrase in msg_lower for phrase in exit_phrases):
         return True
     
+    # Detect if user is now asking about required documents (any pipeline)
+    if _detect_required_documents_intent(message):
+        return True
+
     # If in cutoff/eligibility flow, detect informational questions
     if current_flow in ["cutoff", "eligibility"]:
         info_keywords = [
@@ -453,9 +554,9 @@ def _is_topic_change(message: str, current_flow: str = None) -> bool:
             "document", "certificate", "eligibility criteria",
             "lateral", "management", "nri", "seat", "quota"
         ]
-        # If message has 3+ words and contains informational keywords, it's a topic change
+        # If message has 2+ words and contains informational keywords, it's a topic change
         word_count = len(msg_lower.split())
-        if word_count >= 3 and any(kw in msg_lower for kw in info_keywords):
+        if word_count >= 2 and any(kw in msg_lower for kw in info_keywords):
             return True
     
     # If in contact flow, detect cutoff/info questions
@@ -722,11 +823,13 @@ def _build_multi_branch_reply(
         title = "Cutoff Ranks: " + " | ".join(title_parts)
         return format_cutoffs_table(all_cutoffs, title=title, max_rows=50)
     
-    # Original logic for specific category and gender
+    # Original logic for specific branch(es) / category.
+    # gender=None is now handled in get_cutoff / check_eligibility:
+    # the gender filter is skipped and the best available row is returned.
     parts: list[str] = []
     for b in branches:
         if rank is not None:
-            result = check_eligibility(rank, b, category, year=year, gender=gender)
+            result = check_eligibility(rank, b, category, year=year, gender=gender if gender else "Boys")
         else:
             result = get_cutoff(b, category, year=year, gender=gender, show_trend=show_trend)
         parts.append(result.message)
@@ -1132,35 +1235,204 @@ async def chat_stream(req: ChatRequest, request: Request):
             rag_context = ""
             cutoff_info = ""
             sources = []
-            
-            # Handle cutoff queries (no streaming needed - direct response)
-            if intent in (IntentType.CUTOFF, IntentType.ELIGIBILITY) and branch and category and gender:
-                if intent == IntentType.ELIGIBILITY and rank:
-                    result = check_eligibility(rank, branch, category, year=year, gender=gender)
-                    cutoff_info = result.message
-                elif branch:
-                    cutoff_info = _build_multi_branch_reply([branch], category, gender, year=year)
-                sources.append("VNRVJIET Cutoff Database")
-                
-                # Stream cutoff response
-                words = cutoff_info.split()
-                for word in words:
-                    yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
-                    await asyncio.sleep(0.015)  # Faster for structured data
-                yield f"data: {json.dumps({'token': '', 'done': True, 'intent': intent.value, 'sources': sources, 'session_id': session_id})}\n\n"
-                
-                _session_history[session_id].append({"role": "user", "content": user_msg})
-                _session_history[session_id].append({"role": "assistant", "content": cutoff_info})
-                return
-            
-            # RAG retrieval for informational queries
-            if intent in (IntentType.INFORMATIONAL, IntentType.MIXED):
+
+            # ── KNOWLEDGE-FIRST: Always search the full knowledge database first ──
+            # Skip RAG for cutoff/eligibility queries — Firestore is the authoritative
+            # source for structured rank data; RAG text docs can introduce wrong values.
+            _kf_cutoff_indicators = [
+                "cutoff", "cut off", "cut-off", "closing rank", "last rank",
+                "eapcet", "tseamcet", "ts eamcet", "opening rank", "counselling",
+                "eligible", "eligibility", "can i get", "will i get", "my rank",
+            ]
+            _kf_skip_stream = any(kw in user_msg.lower() for kw in _kf_cutoff_indicators)
+            if not _kf_skip_stream:
                 try:
-                    top_k = 8 if intent == IntentType.MIXED else 5
+                    _kf_result = await retrieve_async(user_msg, top_k=8)
+                    rag_context = _kf_result.context_text
+                    for _kf_chunk in _kf_result.chunks:
+                        sources.append(f"{_kf_chunk.filename} ({_kf_chunk.source})")
+                    logger.info(
+                        "Knowledge-First RAG (stream): retrieved %d chunks, context length: %d chars",
+                        len(_kf_result.chunks),
+                        len(rag_context),
+                    )
+                except Exception as _kf_exc:
+                    logger.error("Knowledge-First RAG (stream) failed: %s", _kf_exc)
+                    rag_context = ""
+
+            # ── Active cutoff/eligibility collection in progress ────────────
+            # ALWAYS check this FIRST, regardless of the current message's intent.
+            # The user may reply with just a branch name ("aid"), a number, or any
+            # short text that the classifier won't tag as CUTOFF — but if there is
+            # an active collection pipeline for this session we must continue it.
+            if session_id in _session_cutoff_data:
+                collected_s = _session_cutoff_data[session_id]
+                flow_s = collected_s.get("_flow", "cutoff")
+                is_elig_s = (flow_s == "eligibility")
+
+                # Dynamic re-extraction on every reply
+                if "branch" not in collected_s:
+                    _sb = extract_branches(user_msg)
+                    if _sb and "ALL" not in _sb:
+                        collected_s["branch"] = _sb
+                if "category" not in collected_s:
+                    _sc = extract_category(user_msg)
+                    if _sc:
+                        collected_s["category"] = _sc
+                if "gender" not in collected_s:
+                    _sg = extract_gender(user_msg)
+                    if _sg:
+                        collected_s["gender"] = _sg
+                if "year" not in collected_s:
+                    _sy = extract_year(user_msg)
+                    if _sy:
+                        collected_s["year"] = _sy
+                    elif re.search(r"\b(latest|recent|current|now|last)\b", user_msg, re.I):
+                        collected_s["year"] = None  # use latest available
+                if is_elig_s and "rank" not in collected_s:
+                    _sr = extract_rank(user_msg)
+                    if _sr:
+                        collected_s["rank"] = _sr
+
+                _qs = _ELIGIBILITY_QUESTIONS if is_elig_s else _CUTOFF_QUESTIONS
+                _req_s = [f for f, _ in _qs]
+                _done_s = all(f in collected_s for f in _req_s)
+
+                if _done_s:
+                    _bl = collected_s["branch"]
+                    if isinstance(_bl, str):
+                        _bl = [_bl]
+                    _cutoff_r = _build_multi_branch_reply(
+                        _bl,
+                        collected_s["category"],
+                        collected_s.get("gender"),
+                        collected_s.get("rank") if is_elig_s else None,
+                        show_trend=collected_s.get("_show_trend", False),
+                        year=collected_s.get("year"),
+                    )
+                    _session_last_cutoff[session_id] = {
+                        "branch": _bl,
+                        "category": collected_s["category"],
+                        "gender": collected_s.get("gender"),
+                        "year": collected_s.get("year"),
+                    }
+                    del _session_cutoff_data[session_id]
+                    words = _cutoff_r.split()
+                    for word in words:
+                        yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                        await asyncio.sleep(0.015)
+                    yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'cutoff', 'sources': ['VNRVJIET Cutoff Database'], 'session_id': session_id})}\n\n"
+                    _session_history[session_id].append({"role": "user", "content": user_msg})
+                    _session_history[session_id].append({"role": "assistant", "content": _cutoff_r})
+                    return
+                else:
+                    # Ask next missing field
+                    for _fld, _qtmpl in _qs:
+                        if _fld not in collected_s:
+                            collected_s["_waiting_for"] = _fld
+                            if _fld == "branch":
+                                avail_b = list_branches()
+                                _ask_s = _qtmpl.format(branches=", ".join(avail_b))
+                            else:
+                                _ask_s = _qtmpl
+                            words = _ask_s.split()
+                            for word in words:
+                                yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                                await asyncio.sleep(0.02)
+                            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': 'cutoff', 'session_id': session_id})}\n\n"
+                            _session_history[session_id].append({"role": "user", "content": user_msg})
+                            _session_history[session_id].append({"role": "assistant", "content": _ask_s})
+                            return
+
+            # ── New cutoff / eligibility query (no active session) ───────────
+            # Only start a fresh collection pipeline when the intent is cutoff/eligibility.
+            elif intent in (IntentType.CUTOFF, IntentType.ELIGIBILITY):
+                is_elig_n = (intent == IntentType.ELIGIBILITY)
+                _flow_n = "eligibility" if is_elig_n else "cutoff"
+                _qs_n = _ELIGIBILITY_QUESTIONS if is_elig_n else _CUTOFF_QUESTIONS
+                _coll_n: dict = {"_flow": _flow_n}
+                if _detect_trend_request(user_msg):
+                    _coll_n["_show_trend"] = True
+                _bn = extract_branches(user_msg)
+                if _bn and "ALL" not in _bn:
+                    _coll_n["branch"] = _bn
+                _cn = extract_category(user_msg)
+                if _cn:
+                    _coll_n["category"] = _cn
+                _gn = extract_gender(user_msg)
+                if _gn:
+                    _coll_n["gender"] = _gn
+                _yn = extract_year(user_msg)
+                if _yn:
+                    _coll_n["year"] = _yn
+                elif re.search(r"\b(latest|recent|current|now|last)\b", user_msg, re.I):
+                    _coll_n["year"] = None  # use latest available
+                _rn = extract_rank(user_msg)
+                if _rn and is_elig_n:
+                    _coll_n["rank"] = _rn
+
+                _req_n = [f for f, _ in _qs_n]
+                _done_n = all(f in _coll_n for f in _req_n)
+
+                if _done_n:
+                    _bl_n = _coll_n["branch"]
+                    if isinstance(_bl_n, str):
+                        _bl_n = [_bl_n]
+                    _cr_n = _build_multi_branch_reply(
+                        _bl_n, _coll_n["category"], _coll_n.get("gender"),
+                        _coll_n.get("rank") if is_elig_n else None,
+                        show_trend=_coll_n.get("_show_trend", False),
+                        year=_coll_n.get("year"),
+                    )
+                    _session_last_cutoff[session_id] = {
+                        "branch": _bl_n, "category": _coll_n["category"],
+                        "gender": _coll_n.get("gender"), "year": _coll_n.get("year"),
+                    }
+                    words = _cr_n.split()
+                    for word in words:
+                        yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                        await asyncio.sleep(0.015)
+                    yield f"data: {json.dumps({'token': '', 'done': True, 'intent': intent.value, 'sources': ['VNRVJIET Cutoff Database'], 'session_id': session_id})}\n\n"
+                    _session_history[session_id].append({"role": "user", "content": user_msg})
+                    _session_history[session_id].append({"role": "assistant", "content": _cr_n})
+                    return
+                else:
+                    # Start step-by-step — ask first missing field
+                    for _fld_n, _qtmpl_n in _qs_n:
+                        if _fld_n not in _coll_n:
+                            _coll_n["_waiting_for"] = _fld_n
+                            _clear_other_pipelines(session_id, keep="cutoff")
+                            _session_cutoff_data[session_id] = _coll_n
+                            _intro_n = "Sure! Let me help you check your eligibility." if is_elig_n else "Sure! Let me show you the cutoff ranks."
+                            if _fld_n == "branch":
+                                avail_b_n = list_branches()
+                                _ask_n = f"{_intro_n}\n\n{_qtmpl_n.format(branches=', '.join(avail_b_n))}"
+                            else:
+                                _ask_n = _qtmpl_n
+                            words = _ask_n.split()
+                            for word in words:
+                                yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+                                await asyncio.sleep(0.02)
+                            yield f"data: {json.dumps({'token': '', 'done': True, 'intent': intent.value, 'session_id': session_id})}\n\n"
+                            _session_history[session_id].append({"role": "user", "content": user_msg})
+                            _session_history[session_id].append({"role": "assistant", "content": _ask_n})
+                            return
+            
+            # RAG retrieval — only for non-cutoff queries. CUTOFF/ELIGIBILITY data
+            # comes exclusively from Firestore; RAG text docs can introduce wrong ranks.
+            if not rag_context and intent not in (IntentType.CUTOFF, IntentType.ELIGIBILITY):
+                try:
+                    top_k = 8 if intent == IntentType.MIXED else 6
                     rag_result = await retrieve_async(user_msg, top_k=top_k)
                     rag_context = rag_result.context_text
                     for chunk in rag_result.chunks:
                         sources.append(f"{chunk.filename} ({chunk.source})")
+                    logger.info(
+                        "RAG (stream) retrieved %d chunks (intent=%s), context length: %d chars",
+                        len(rag_result.chunks),
+                        intent.value,
+                        len(rag_context),
+                    )
                 except Exception as e:
                     logger.error(f"RAG retrieval failed: {e}")
             
@@ -1675,6 +1947,33 @@ async def chat(req: ChatRequest, request: Request):
                     _session_history[session_id].append({"role": "assistant", "content": ask})
                     return ChatResponse(reply=ask, intent="cutoff", session_id=session_id, language=current_language)
             
+            # A3 – Dynamic completeness: after EVERY user reply, re-scan for ALL
+            # fields the user may have volunteered. This lets power users who
+            # provide extra info (e.g. "CSE OC" when asked for branch) skip steps.
+            if waiting_for not in ("_confirm_reuse",):
+                if "branch" not in collected:
+                    _dyn_b = extract_branches(user_msg)
+                    if _dyn_b:
+                        collected["branch"] = _dyn_b
+                if "category" not in collected:
+                    _dyn_c = extract_category(user_msg)
+                    if _dyn_c:
+                        collected["category"] = _dyn_c
+                if "gender" not in collected:
+                    _dyn_g = extract_gender(user_msg)
+                    if _dyn_g:
+                        collected["gender"] = _dyn_g
+                if "year" not in collected:
+                    _dyn_y = extract_year(user_msg)
+                    if _dyn_y:
+                        collected["year"] = _dyn_y
+                    elif re.search(r"\b(latest|recent|current|now|last)\b", user_msg, re.I):
+                        collected["year"] = None  # use latest available
+                if flow == "eligibility" and "rank" not in collected:
+                    _dyn_r = extract_rank(user_msg)
+                    if _dyn_r:
+                        collected["rank"] = _dyn_r
+
             # Try to extract what we asked for from the user's reply
             if waiting_for == "branch":
                 vals = extract_branches(user_msg)
@@ -1710,6 +2009,18 @@ async def chat(req: ChatRequest, request: Request):
                     else:
                         val = user_msg.strip()
                 collected["gender"] = val
+
+            elif waiting_for == "year":
+                # Accept a specific year or "latest"/"recent" to mean no filter (use latest available)
+                val = extract_year(user_msg)
+                t = user_msg.strip().lower()
+                if val:
+                    collected["year"] = val
+                elif any(w in t for w in ["latest", "recent", "current", "new", "now", "last", "2025"]):
+                    collected["year"] = None  # None = use latest available in DB
+                else:
+                    # Unrecognisable input — default to latest and move on
+                    collected["year"] = None
 
             elif waiting_for == "rank":
                 # Check if user says they don't have a rank
@@ -1749,8 +2060,10 @@ async def chat(req: ChatRequest, request: Request):
                     return ChatResponse(reply=ask, intent="cutoff", session_id=session_id, language=current_language)
 
             # Check what's still missing and ask the next question
+            # Note: year can be stored as None (meaning "latest"), so we only
+            # gate on key presence, not value truthiness.
             for field, question_template in questions:
-                if field not in collected or collected[field] is None:
+                if field not in collected:
                     collected["_waiting_for"] = field
                     if field == "branch":
                         branches = list_branches()
@@ -1797,6 +2110,101 @@ async def chat(req: ChatRequest, request: Request):
                 language=current_language,
             )
 
+    # ── PIPELINE SWITCH DETECTION (early, before all pipeline handlers) ────
+    # Detect intent early so we can clear other pipelines before processing.
+    # This enforces strict pipeline isolation for the Required Documents pipeline.
+    _early_is_documents = _detect_required_documents_intent(user_msg)
+
+    if _early_is_documents:
+        # Immediately clear ALL other pipelines so no state bleeds in
+        _clear_other_pipelines(session_id, keep="documents")
+
+    # ── Required Documents pipeline handler ──────────────────
+    if _early_is_documents or session_id in _session_documents_data:
+        # If arriving fresh, initialise the pipeline
+        if session_id not in _session_documents_data:
+            _session_documents_data[session_id] = {"_waiting_for": "program"}
+            _session_active_pipeline[session_id] = "documents"
+
+        docs_state = _session_documents_data[session_id]
+        waiting_for = docs_state.get("_waiting_for")
+
+        if waiting_for == "program":
+            # First time in this pipeline — ask which program
+            ask = (
+                "For which programme do you need the required documents?\n\n"
+                "1️⃣ **B.Tech** – Bachelor of Technology\n"
+                "2️⃣ **M.Tech** – Master of Technology\n"
+                "3️⃣ **MCA** – Master of Computer Applications\n\n"
+                "Reply with the number or programme name."
+            )
+            docs_state["_waiting_for"] = "_awaiting_program_reply"
+            _session_history[session_id].append({"role": "user", "content": user_msg})
+            _session_history[session_id].append({"role": "assistant", "content": ask})
+            return ChatResponse(
+                reply=ask,
+                intent="required_documents",
+                session_id=session_id,
+                language=current_language,
+            )
+
+        if waiting_for == "_awaiting_program_reply":
+            program = _resolve_program_selection(user_msg)
+            if program:
+                # Build a targeted RAG query for this program and retrieve from knowledge base
+                rag_query = _DOCUMENTS_RAG_QUERIES[program]
+                try:
+                    rag_result = await retrieve_async(rag_query, top_k=6)
+                    doc_context = rag_result.context_text
+                    doc_sources = list({
+                        f"{c.filename} ({c.source})" for c in rag_result.chunks
+                    })
+                except Exception as e:
+                    logger.error(f"RAG retrieval failed for documents pipeline: {e}")
+                    doc_context = ""
+                    doc_sources = []
+
+                # Let the LLM format the answer from retrieved context
+                history = _session_history.get(session_id, [])
+                doc_reply = await _generate_llm_response_async(
+                    rag_query,
+                    doc_context,
+                    "",
+                    history=history,
+                    session_id=session_id,
+                    language=current_language,
+                )
+
+                # Pipeline complete — clear state
+                del _session_documents_data[session_id]
+                _session_active_pipeline.pop(session_id, None)
+                _session_history[session_id].append({"role": "user", "content": user_msg})
+                _session_history[session_id].append({"role": "assistant", "content": doc_reply})
+                return ChatResponse(
+                    reply=doc_reply,
+                    intent="required_documents",
+                    session_id=session_id,
+                    sources=doc_sources or ["VNRVJIET Admissions Knowledge Base"],
+                    language=current_language,
+                )
+            else:
+                # Couldn't parse the program — ask again clearly
+                ask = (
+                    "I didn't quite catch that. Please choose a programme:\n\n"
+                    "1️⃣ **B.Tech**\n"
+                    "2️⃣ **M.Tech**\n"
+                    "3️⃣ **MCA**\n\n"
+                    "Reply with the number (1, 2, or 3) or the programme name."
+                )
+                _session_history[session_id].append({"role": "user", "content": user_msg})
+                _session_history[session_id].append({"role": "assistant", "content": ask})
+                return ChatResponse(
+                    reply=ask,
+                    intent="required_documents",
+                    session_id=session_id,
+                    language=current_language,
+                )
+
     # ── Check for contact request keywords ───────────────────
     contact_keywords = [
         "talk to admission", "speak with admission", "speak to someone", "talk to someone",
@@ -1809,6 +2217,8 @@ async def chat(req: ChatRequest, request: Request):
     is_contact_request = any(keyword in msg_lower for keyword in contact_keywords)
     
     if is_contact_request and session_id not in _session_contact_data:
+        # Clear all other pipelines before starting contact pipeline
+        _clear_other_pipelines(session_id, keep="contact")
         # Start contact collection flow
         _session_contact_data[session_id] = {"_waiting_for": "name"}
         ask = _CONTACT_QUESTIONS[0][1]  # First question (name)
@@ -1889,6 +2299,37 @@ async def chat(req: ChatRequest, request: Request):
     sources: list[str] = []
     rag_context = ""
 
+    # ── KNOWLEDGE-FIRST: Search full knowledge database before ANY pipeline ───
+    # IMPORTANT: Skip RAG for CUTOFF/ELIGIBILITY at this stage — the cutoff engine
+    # queries Firestore (the authoritative structured DB) and must NOT be polluted
+    # by RAG text documents that may contain stale/sample rank values.
+    # RAG is only applied for informational, mixed, and general queries.
+    _is_cutoff_intent = False  # resolved below after early-pipeline sections
+    try:
+        # We do NOT yet know the intent here; we use a lightweight keyword pre-check
+        # to avoid retrieving RAG for clear cutoff queries.
+        _pre_cutoff_indicators = [
+            "cutoff", "cut off", "cut-off", "closing rank", "last rank",
+            "eapcet", "tseamcet", "ts eamcet", "opening rank", "counselling",
+            "eligible", "eligibility", "can i get", "will i get", "my rank",
+        ]
+        _kf_skip = any(kw in user_msg.lower() for kw in _pre_cutoff_indicators)
+        if not _kf_skip:
+            _kf_result = await retrieve_async(user_msg, top_k=8)
+            rag_context = _kf_result.context_text
+            for _kf_chunk in _kf_result.chunks:
+                sources.append(f"{_kf_chunk.filename} ({_kf_chunk.source})")
+            logger.info(
+                "Knowledge-First RAG: retrieved %d chunks, context length: %d chars",
+                len(_kf_result.chunks),
+                len(rag_context),
+            )
+        else:
+            logger.info("Knowledge-First RAG: skipped (cutoff/eligibility query detected)")
+    except Exception as _kf_exc:
+        logger.error("Knowledge-First RAG retrieval failed: %s", _kf_exc)
+        rag_context = ""
+
     # ── Gender-change follow-up (early catch regardless of intent) ────────────
     # e.g. user says "for girl" / "for boys" after a cutoff query was shown.
     # Handle here so even if the intent classifier misses CUTOFF, we still respond correctly.
@@ -1938,6 +2379,18 @@ async def chat(req: ChatRequest, request: Request):
         
         # Extract multiple branches
         branches_extracted = extract_branches(user_msg)
+        # A1: Only return ALL branches when the user EXPLICITLY requests it.
+        # Never auto-show all branches for a generic/vague cutoff query.
+        _all_branches_explicit = any(
+            phrase in user_msg.lower()
+            for phrase in [
+                "all branches", "all branch", "show all", "branch-wise for all",
+                "every branch", "all departments", "all btech", "all b.tech",
+            ]
+        )
+        if branches_extracted and "ALL" in branches_extracted and not _all_branches_explicit:
+            # User didn't explicitly ask for all branches → treat as no branch provided
+            branches_extracted = []
         if branches_extracted:
             # Keep "ALL" as-is so _build_multi_branch_reply can use flexible query
             collected["branch"] = branches_extracted
@@ -1947,6 +2400,8 @@ async def chat(req: ChatRequest, request: Request):
             collected["gender"] = gender
         if year:
             collected["year"] = year
+        elif re.search(r"\b(latest|recent|current|now|last)\b", user_msg, re.I):
+            collected["year"] = None  # use latest available
         if rank and is_eligibility:
             collected["rank"] = rank
 
@@ -1959,16 +2414,33 @@ async def chat(req: ChatRequest, request: Request):
             if isinstance(b_list, str):
                 b_list = [b_list]
             show_trend = collected.get("_show_trend", False)
-            cutoff_info = _build_multi_branch_reply(b_list, category, gender, rank if is_eligibility else None, show_trend=show_trend, year=collected.get("year"))
-            sources.append("VNRVJIET Cutoff Database")
-            # Save for gender-change follow-ups (e.g. user next says "for girl" / "for boys")
+            _cutoff_year = collected.get("year")
+            cutoff_reply = _build_multi_branch_reply(
+                b_list, category, gender,
+                rank if is_eligibility else None,
+                show_trend=show_trend,
+                year=_cutoff_year,
+            )
+            # Save for gender-change follow-ups
             if not is_eligibility and not rank:
                 _session_last_cutoff[session_id] = {
                     "branch": b_list,
                     "category": category,
                     "gender": gender,
-                    "year": collected.get("year"),
+                    "year": _cutoff_year,
                 }
+            # ─ Return DIRECTLY from the structured Firestore data. ─────────
+            # NEVER pass cutoff data through the LLM — it can introduce wrong
+            # ranks by blending RAG context with structured data.
+            _session_history[session_id].append({"role": "user", "content": user_msg})
+            _session_history[session_id].append({"role": "assistant", "content": cutoff_reply})
+            return ChatResponse(
+                reply=cutoff_reply,
+                intent=intent.value,
+                session_id=session_id,
+                sources=["VNRVJIET Cutoff Database"],
+                language=current_language,
+            )
         else:
             # Check if user is changing gender for the same branch/category (cutoff query)
             # e.g., user said "for girl" after seeing boys cutoff → re-query with new gender
@@ -2028,6 +2500,8 @@ async def chat(req: ChatRequest, request: Request):
             for field, question_template in questions:
                 if field not in collected:
                     collected["_waiting_for"] = field
+                    # Clear other pipelines before activating cutoff pipeline
+                    _clear_other_pipelines(session_id, keep="cutoff")
                     _session_cutoff_data[session_id] = collected
 
                     intro = "Sure! Let me help you check your eligibility." if is_eligibility else "Sure! Let me show you the cutoff ranks."
@@ -2042,62 +2516,64 @@ async def chat(req: ChatRequest, request: Request):
                     _session_history[session_id].append({"role": "assistant", "content": ask})
                     return ChatResponse(reply=ask, intent=intent.value, session_id=session_id, language=current_language)
 
-    # ── RAG path ──────────────────────────────────────────────
-    if intent in (IntentType.INFORMATIONAL, IntentType.MIXED):
-        # ── Clarification gate (informational only, no cutoff data yet) ────
-        # For broad/vague topics, ask a narrowing question before retrieving.
-        if intent == IntentType.INFORMATIONAL and not cutoff_info:
-            clari_category = _detect_category_needing_clarification(user_msg)
-            if clari_category:
-                clari_config = _CLARIFICATION_CATEGORIES[clari_category]
-                clari_question = clari_config["question"]
+    # ── Clarification gate (informational only, no cutoff data yet) ──
+    # For broad/vague informational topics, ask a narrowing question first.
+    if intent == IntentType.INFORMATIONAL and not cutoff_info:
+        clari_category = _detect_category_needing_clarification(user_msg)
+        if clari_category:
+            clari_config = _CLARIFICATION_CATEGORIES[clari_category]
+            clari_question = clari_config["question"]
 
-                _session_pending_clarification[session_id] = {
-                    "original_query": user_msg,
-                    "category": clari_category,
-                }
-                logger.info(
-                    f"Clarification triggered for session {session_id}: "
-                    f"category='{clari_category}', query='{user_msg}'"
-                )
+            _session_pending_clarification[session_id] = {
+                "original_query": user_msg,
+                "category": clari_category,
+            }
+            logger.info(
+                f"Clarification triggered for session {session_id}: "
+                f"category='{clari_category}', query='{user_msg}'"
+            )
 
-                _session_history[session_id].append({"role": "user", "content": user_msg})
-                _session_history[session_id].append({"role": "assistant", "content": clari_question})
+            _session_history[session_id].append({"role": "user", "content": user_msg})
+            _session_history[session_id].append({"role": "assistant", "content": clari_question})
 
-                return ChatResponse(
-                    reply=clari_question,
-                    intent="clarification",
-                    session_id=session_id,
-                    language=current_language,
-                )
+            return ChatResponse(
+                reply=clari_question,
+                intent="clarification",
+                session_id=session_id,
+                language=current_language,
+            )
 
-        # ── Cache check (informational only, after clarification gate) ────
-        # For specific queries that don't need clarification, check cache first.
-        if intent == IntentType.INFORMATIONAL and not cutoff_info:
-            cached = _get_cached_response(user_msg, intent.value, current_language)
-            if cached:
-                reply, cached_sources = cached
-                _session_history[session_id].append({"role": "user", "content": user_msg})
-                _session_history[session_id].append({"role": "assistant", "content": reply})
-                return ChatResponse(
-                    reply=reply,
-                    intent=intent.value,
-                    session_id=session_id,
-                    sources=cached_sources,
-                    language=current_language,
-                )
+    # ── Cache check (informational only) ─────────────────────
+    # For specific queries that don't need clarification, check cache first.
+    if intent == IntentType.INFORMATIONAL and not cutoff_info:
+        cached = _get_cached_response(user_msg, intent.value, current_language)
+        if cached:
+            reply, cached_sources = cached
+            _session_history[session_id].append({"role": "user", "content": user_msg})
+            _session_history[session_id].append({"role": "assistant", "content": reply})
+            return ChatResponse(
+                reply=reply,
+                intent=intent.value,
+                session_id=session_id,
+                sources=cached_sources,
+                language=current_language,
+            )
 
+    # ── RAG retrieval ───────────────────────────────────────────────
+    # Only for informational / general queries. CUTOFF and ELIGIBILITY intents
+    # always return via Firestore before reaching this point. Running RAG for
+    # cutoff queries would put wrong rank values into the LLM context.
+    if not rag_context and intent not in (IntentType.CUTOFF, IntentType.ELIGIBILITY):
         try:
-            # Use adaptive top_k: more chunks for mixed queries, fewer for simple ones
-            top_k = 8 if intent == IntentType.MIXED else 5
-            # Use async retrieval for better performance
+            top_k = 8 if intent == IntentType.MIXED else 6
             rag_result = await retrieve_async(user_msg, top_k=top_k)
             rag_context = rag_result.context_text
             for chunk in rag_result.chunks:
                 sources.append(f"{chunk.filename} ({chunk.source})")
             logger.info(
-                "RAG retrieved %d chunks, context length: %d chars",
+                "RAG retrieved %d chunks (intent=%s), context length: %d chars",
                 len(rag_result.chunks),
+                intent.value,
                 len(rag_context),
             )
         except Exception as e:
@@ -2252,6 +2728,14 @@ async def clear_session(req: ChatRequest):
         del _session_pending_clarification[session_id]
         cleared.append("pending_clarification")
     
+    if session_id in _session_documents_data:
+        del _session_documents_data[session_id]
+        cleared.append("documents_data")
+    
+    if session_id in _session_active_pipeline:
+        del _session_active_pipeline[session_id]
+        cleared.append("active_pipeline")
+
     if session_id in _session_language:
         del _session_language[session_id]
         cleared.append("language")
