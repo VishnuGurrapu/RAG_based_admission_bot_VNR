@@ -52,18 +52,35 @@ Keep responses informative but concise. Include specific details like numbers, d
 Context:
 {retrieval_result.context_text}"""
 
-    client = _get_async_openai()
-    response = await client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": query}
-        ],
-        temperature=0.3,
-        max_tokens=1000
-    )
-    
-    return response.choices[0].message.content
+    try:
+        client = _get_async_openai()
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": query}
+            ],
+            temperature=0.3,
+            max_tokens=1000
+        )
+        return response.choices[0].message.content
+    except Exception as exc:
+        logger.warning(f"LLM generation failed, using retrieved context only: {exc}")
+
+        if retrieval_result.chunks:
+            snippets = []
+            for chunk in retrieval_result.chunks[:2]:
+                if chunk.text:
+                    snippets.append(chunk.text[:500])
+
+            if snippets:
+                return (
+                    "I found relevant official information, but I could not generate a full AI response right now. "
+                    "Here are the most relevant details from the knowledge base:\n\n"
+                    + "\n\n".join(f"- {snippet}" for snippet in snippets)
+                )
+
+        return "I found the question, but I could not generate a response right now. Please try again later or contact the admissions office."
 from app.utils.validators import (
     extract_branch, extract_category, extract_gender, 
     extract_year, extract_rank, extract_quota
