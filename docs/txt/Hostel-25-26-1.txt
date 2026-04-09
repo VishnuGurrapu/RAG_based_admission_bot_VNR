@@ -14,9 +14,9 @@ Location:
   Hyderabad – 500090, Telangana, India
 - Website: https://www.vnrvjiet.ac.in
 
-Occupancy:
-- Boys Hostel Capacity: 1,116 students
-- Girls Hostel Capacity: 1,056 students
+Occupancy(may vary based on room allocation and availability):
+- Boys Hostel Capacity: 1,200 students
+- Girls Hostel Capacity: 1,200 students
 
 Infrastructure:
 - Four high-speed elevators
@@ -155,7 +155,7 @@ Events:
 - Transportation between hostel and college
 
 ------------------------------------------------------------
-9. FEE STRUCTURE (2025-26)
+9. FEE STRUCTURE (2025-26)-
 ------------------------------------------------------------
 
 Hostel Fee: Rs. 1,30,000 per year

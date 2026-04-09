@@ -6,6 +6,7 @@ Handles user queries with proper parameter extraction and intent classification.
 from __future__ import annotations
 
 import logging
+import re
 import traceback
 from typing import Optional
 
@@ -31,6 +32,29 @@ def _get_async_openai() -> AsyncOpenAI:
         _async_openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
     return _async_openai_client
 
+
+def _normalize_admission_category_text(text: str) -> str:
+    """Normalize legacy admission category phrases to canonical naming."""
+    if not text:
+        return text
+
+    normalized = text
+
+    # Merge NRI Sponsored into NRI everywhere
+    normalized = re.sub(r"\bNRI\s*Sponsored\b", "NRI", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bNRI\s*(?:and|&)\s*NRI\b", "NRI", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bNRI\s*/\s*NRI\b", "NRI", normalized, flags=re.IGNORECASE)
+
+    # Avoid fragmented wording that treats Management and Category-B as separate top-level groups
+    normalized = re.sub(
+        r"Management\s+quota\s+and\s+Category-?B\s+quota",
+        "Management quota (Category-B)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+
+    return normalized
+
 async def retrieve_and_respond(query: str, language: str = "en") -> str:
     """Generate AI response using RAG pipeline."""
     
@@ -40,14 +64,45 @@ async def retrieve_and_respond(query: str, language: str = "en") -> str:
     if not retrieval_result.chunks:
         return "I don't have specific information about that in my knowledge base. Please contact our admissions office for detailed information."
     
+    # Map language codes to full language names for better LLM understanding
+    language_names = {
+        "en": "English",
+        "hi": "Hindi",
+        "te": "Telugu",
+        "ta": "Tamil",
+        "mr": "Marathi",
+        "kn": "Kannada",
+        "bn": "Bengali",
+        "gu": "Gujarati",
+    }
+    
+    language_name = language_names.get(language, "English")
+    
     # Generate response using GPT with retrieved context
     system_prompt = f"""You are a helpful AI assistant for VNRVJIET (VNR Vignana Jyothi Institute of Engineering and Technology) admissions.
 
 Use the provided context to answer questions accurately. If the context doesn't contain the answer, say so clearly.
 
-Respond in {language} language if requested, otherwise use English.
+IMPORTANT: You MUST respond ONLY in {language_name} language. Do NOT use English unless the user selected English.
+
+For Marathi (मराठी), your ENTIRE response must be in Marathi script with NO English sentences.
 
 Keep responses informative but concise. Include specific details like numbers, dates, and procedures when available.
+
+Canonical admission category hierarchy (STRICT):
+1) Convenor / Category-A
+2) Management
+    - Category-B
+    - NRI
+3) Supernumerary Seats
+
+Rules:
+- Management is the parent category.
+- Category-B and NRI must be nested under Management.
+- Never present Category-B or NRI as top-level categories.
+- Treat "NRI Sponsored" as "NRI" and never list both separately.
+
+Standard abbreviations (like CSE, ECE, BC-D, OC) can remain as-is.
 
 Context:
 {retrieval_result.context_text}"""
@@ -62,8 +117,8 @@ Context:
         temperature=0.3,
         max_tokens=1000
     )
-    
-    return response.choices[0].message.content
+
+    return _normalize_admission_category_text(response.choices[0].message.content)
 from app.utils.validators import (
     extract_branch, extract_category, extract_gender, 
     extract_year, extract_rank, extract_quota
@@ -104,11 +159,11 @@ async def chat_endpoint(request: ChatRequest) -> ChatResponse:
         
         if intent_result.intent.value == "cutoff":
             # Handle cutoff/eligibility queries
-            return await handle_cutoff_query(user_message, intent_result)
+            return await handle_cutoff_query(user_message, intent_result, request.language)
         
         elif intent_result.intent.value == "mixed":
             # Handle mixed queries (RAG + cutoff)
-            return await handle_mixed_query(user_message, intent_result)
+            return await handle_mixed_query(user_message, intent_result, request.language)
         
         elif intent_result.intent.value == "greeting":
             return ChatResponse(
@@ -124,14 +179,14 @@ async def chat_endpoint(request: ChatRequest) -> ChatResponse:
         
         else:
             # Default to RAG for informational queries
-            return await handle_informational_query(user_message, intent_result)
+            return await handle_informational_query(user_message, intent_result, request.language)
             
     except Exception as e:
         logger.error(f"Error processing chat: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal server error")
 
-async def handle_cutoff_query(user_message: str, intent_result: ClassificationResult) -> ChatResponse:
+async def handle_cutoff_query(user_message: str, intent_result: ClassificationResult, language: str = "en") -> ChatResponse:
     """Handle queries that need cutoff/eligibility data from Firestore."""
     
     # Extract parameters from user message
@@ -174,7 +229,8 @@ async def handle_cutoff_query(user_message: str, intent_result: ClassificationRe
             category=category, 
             year=year,
             gender=gender,
-            quota=quota
+            quota=quota,
+            language=language
         )
 
         # Be defensive: treat data as found when any concrete cutoff payload exists,
@@ -231,11 +287,11 @@ async def handle_cutoff_query(user_message: str, intent_result: ClassificationRe
             metadata={"error": str(e)}
         )
 
-async def handle_mixed_query(user_message: str, intent_result: ClassificationResult) -> ChatResponse:
+async def handle_mixed_query(user_message: str, intent_result: ClassificationResult, language: str = "en") -> ChatResponse:
     """Handle queries that need both RAG context and cutoff data."""
     
     # First get RAG context
-    rag_response = await retrieve_and_respond(user_message, "en")
+    rag_response = await retrieve_and_respond(user_message, language)
     
     # Then try to add cutoff data if relevant
     branch = extract_branch(user_message)
@@ -243,7 +299,7 @@ async def handle_mixed_query(user_message: str, intent_result: ClassificationRes
     
     if branch and category:
         try:
-            cutoff_result = get_cutoff(branch=branch, category=category)
+            cutoff_result = get_cutoff(branch=branch, category=category, language=language)
             if cutoff_result.found:
                 combined_response = rag_response + "\n\n" + cutoff_result.message
                 return ChatResponse(
@@ -260,11 +316,11 @@ async def handle_mixed_query(user_message: str, intent_result: ClassificationRes
         metadata={"has_cutoff": False}
     )
 
-async def handle_informational_query(user_message: str, intent_result: ClassificationResult) -> ChatResponse:
+async def handle_informational_query(user_message: str, intent_result: ClassificationResult, language: str = "en") -> ChatResponse:
     """Handle general informational queries using RAG."""
     
     try:
-        response_text = await retrieve_and_respond(user_message, "en")
+        response_text = await retrieve_and_respond(user_message, language)
         
         return ChatResponse(
             response=response_text,

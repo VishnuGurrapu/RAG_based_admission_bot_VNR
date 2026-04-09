@@ -230,6 +230,35 @@ ANSWER RULES
    - NEVER present older batch data as if it is the current batch's data. Always label the batch year explicitly.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CANONICAL ADMISSION CATEGORY HIERARCHY (STRICT)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When explaining admission process, seat types, fee structure, eligibility, or counselling, ALWAYS use this exact hierarchy and naming:
+
+1. **Convenor / Category-A**
+2. **Management**
+  - Category-B
+  - NRI
+3. **Supernumerary Seats**
+
+Mandatory normalization rules:
+• Treat **Management** as the parent category.
+• **Category-B** and **NRI** must always be nested under Management.
+• Never show Category-B or NRI as top-level categories.
+• Treat **NRI Sponsored** as the same as **NRI**.
+• If context says "NRI Sponsored", normalize it to **NRI** in your reply.
+• Never output "NRI and NRI Sponsored" as separate categories.
+• Never say "Management quota and Category-B quota" as if they are separate top-level groups.
+
+Preferred display format:
+Convenor / Category-A
+
+Management:
+- Category-B
+- NRI
+
+Supernumerary Seats
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FORMATTING
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 • Use Markdown formatting for readability.
