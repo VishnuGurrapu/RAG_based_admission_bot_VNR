@@ -322,6 +322,7 @@
     const lines = String(text).replace(/\r\n?/g, "\n").split("\n");
     const blocks = [];
     let listType = null;
+    let orderedListIndex = 0;
 
     function closeList() {
       if (listType) {
@@ -353,7 +354,9 @@
           listType = "ol";
           blocks.push("<ol>");
         }
-        blocks.push(`<li>${renderInlineMarkdown(orderedMatch[1])}</li>`);
+        orderedListIndex += 1;
+        // Force monotonically increasing numbering even if source text repeats "1.".
+        blocks.push(`<li value="${orderedListIndex}">${renderInlineMarkdown(orderedMatch[1])}</li>`);
         continue;
       }
 
