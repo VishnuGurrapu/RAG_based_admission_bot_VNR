@@ -17,12 +17,12 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def clear_document_flow_state():
-    chat_api._PENDING_DOCUMENT_CATEGORY_SESSIONS.clear()
+    chat_api._DOCUMENT_FLOW_STATE_BY_SESSION.clear()
     yield
-    chat_api._PENDING_DOCUMENT_CATEGORY_SESSIONS.clear()
+    chat_api._DOCUMENT_FLOW_STATE_BY_SESSION.clear()
 
 
-def test_required_documents_prompts_for_category_selection():
+def test_required_documents_prompts_for_program_selection():
     response = client.post(
         "/api/chat",
         json={"message": "What documents are required?", "session_id": "docs-flow-selection"},
@@ -30,25 +30,23 @@ def test_required_documents_prompts_for_category_selection():
     assert response.status_code == 200
 
     data = response.json()
-    assert data["response"].startswith("Please select your admission category to view required documents:")
+    assert data["response"].startswith("Please select your program:")
     assert data["options"] == [
-        {"label": "Convener (Category A)", "value": "convener"},
-        {
-            "label": "Management (Category B / NRI / NRI Sponsored)",
-            "value": "management",
-        },
-        {"label": "Supernumerary Quota", "value": "supernumerary"},
+        {"label": "B.Tech", "value": "btech"},
+        {"label": "M.Tech", "value": "mtech"},
+        {"label": "MBA / MCA", "value": "mba_mca"},
     ]
 
 
-def test_required_documents_waits_for_selection_and_answers_selected_category(monkeypatch):
+def test_required_documents_waits_for_program_then_category_and_answers_selection(monkeypatch):
     async def fake_retrieve_and_respond(query: str, language: str = "en", additional_instructions: str = "") -> str:
-        assert "Management (Category B / NRI / NRI Sponsored)" in query
+        assert "M.Tech" in query
+        assert "Management (Category B / NRI)" in query
         return (
-            "For Management (Category B / NRI / NRI Sponsored) admission, the required documents are:\n"
+            "For Management (Category B / NRI) admission, the required documents are:\n"
             "- 10th and 12th mark sheets\n"
             "- Transfer Certificate (TC)\n"
-            "- Passport and visa documents (for NRI/NRI Sponsored where applicable)"
+            "- Passport and visa documents (for NRI where applicable)"
         )
 
     monkeypatch.setattr(chat_api, "retrieve_and_respond", fake_retrieve_and_respond)
@@ -66,13 +64,113 @@ def test_required_documents_waits_for_selection_and_answers_selected_category(mo
         json={"message": "2", "session_id": session_id},
     )
     assert second.status_code == 200
+    assert second.json()["response"].startswith("Please select your admission category:")
+    assert second.json()["options"] == [
+        {"label": "Convener (Category A)", "value": "convener"},
+        {
+            "label": "Management (Category B / NRI)",
+            "value": "management",
+        },
+        {"label": "Supernumerary Quota", "value": "supernumerary"},
+    ]
 
-    data = second.json()
-    assert data["response"].startswith(
-        "For Management (Category B / NRI / NRI Sponsored) admission, the required documents are:"
+    third = client.post(
+        "/api/chat",
+        json={"message": "2", "session_id": session_id},
     )
+    assert third.status_code == 200
+
+    data = third.json()
+    assert data["response"].startswith("For Management (Category B / NRI) admission")
     assert "For Convener (Category A) admission" not in data["response"]
     assert data["options"] == []
+
+
+def test_documents_flow_accepts_localized_option_labels_and_keeps_language(monkeypatch):
+    observed: dict[str, str] = {}
+
+    async def fake_retrieve_and_respond(query: str, language: str = "en", additional_instructions: str = "") -> str:
+        observed["query"] = query
+        observed["language"] = language
+        return "- ట్రాన్స్‌ఫర్ సర్టిఫికేట్\n- మార్క్స్ మెమోలు"
+
+    monkeypatch.setattr(chat_api, "retrieve_and_respond", fake_retrieve_and_respond)
+
+    session_id = "docs-flow-localized-selection"
+    first = client.post(
+        "/api/chat",
+        json={"message": "అవసరమైన పత్రాలు ఏమిటి?", "session_id": session_id},
+    )
+    assert first.status_code == 200
+    assert "మీ ప్రోగ్రామ్" in first.json()["response"]
+    assert all(not re.search(r"[A-Za-z]", option["label"]) for option in first.json()["options"])
+
+    second = client.post(
+        "/api/chat",
+        json={"message": "ఎం.టెక్", "session_id": session_id},
+    )
+    assert second.status_code == 200
+    assert "మీ ప్రవేశ కోటాను ఎంచుకోండి" in second.json()["response"]
+    assert all(not re.search(r"[A-Za-z]", option["label"]) for option in second.json()["options"])
+
+    third = client.post(
+        "/api/chat",
+        json={"message": "మేనేజ్మెంట్ కోటా", "session_id": session_id},
+    )
+    assert third.status_code == 200
+
+    assert observed["language"] == "te"
+    assert "M.Tech" in observed["query"]
+    assert "Management (Category B / NRI)" in observed["query"]
+    assert third.json()["response"].startswith("మేనేజ్మెంట్ కోటాకు అవసరమైన పత్రాలు:")
+
+
+def test_hindi_documents_flow_uses_pure_hindi_category_buttons():
+    session_id = "docs-flow-hindi-buttons"
+    first = client.post(
+        "/api/chat",
+        json={"message": "आवश्यक दस्तावेज", "session_id": session_id},
+    )
+    assert first.status_code == 200
+    assert first.json()["options"] == [
+        {"label": "बी.टेक", "value": "btech"},
+        {"label": "एम.टेक", "value": "mtech"},
+        {"label": "एम.बी.ए / एम.सी.ए", "value": "mba_mca"},
+    ]
+
+    second = client.post(
+        "/api/chat",
+        json={"message": "बी.टेक", "session_id": session_id},
+    )
+    assert second.status_code == 200
+    assert second.json()["options"] == [
+        {"label": "कन्वीनर कोटा", "value": "convener"},
+        {"label": "मैनेजमेंट कोटा", "value": "management"},
+        {"label": "सुपरन्यूमरेरी कोटा", "value": "supernumerary"},
+    ]
+
+
+def test_documents_flow_pivots_language_between_steps():
+    session_id = "docs-flow-pivot-hi-te"
+    first = client.post(
+        "/api/chat",
+        json={"message": "आवश्यक दस्तावेज", "session_id": session_id},
+    )
+    assert first.status_code == 200
+    assert "प्रोग्राम" in first.json()["response"]
+    assert all(not re.search(r"[A-Za-z]", option["label"]) for option in first.json()["options"])
+
+    second = client.post(
+        "/api/chat",
+        json={"message": "ఎం.టెక్", "session_id": session_id},
+    )
+    assert second.status_code == 200
+    assert "మీ ప్రవేశ కోటాను ఎంచుకోండి" in second.json()["response"]
+    assert second.json()["options"] == [
+        {"label": "కన్వీనర్ కోటా", "value": "convener"},
+        {"label": "మేనేజ్మెంట్ కోటా", "value": "management"},
+        {"label": "సూపర్న్యూమరరీ కోటా", "value": "supernumerary"},
+    ]
 
 
 def test_required_documents_stream_returns_clickable_options():
@@ -87,12 +185,9 @@ def test_required_documents_stream_returns_clickable_options():
 
     assert final_payload["done"] is True
     assert final_payload["options"] == [
-        {"label": "Convener (Category A)", "value": "convener"},
-        {
-            "label": "Management (Category B / NRI / NRI Sponsored)",
-            "value": "management",
-        },
-        {"label": "Supernumerary Quota", "value": "supernumerary"},
+        {"label": "B.Tech", "value": "btech"},
+        {"label": "M.Tech", "value": "mtech"},
+        {"label": "MBA / MCA", "value": "mba_mca"},
     ]
 
 
@@ -108,6 +203,7 @@ def test_inline_numbered_documents_are_reformatted_to_multiline_list(monkeypatch
 
     session_id = "docs-flow-inline-format"
     client.post("/api/chat", json={"message": "What documents are required?", "session_id": session_id})
+    client.post("/api/chat", json={"message": "1", "session_id": session_id})
     response = client.post("/api/chat", json={"message": "1", "session_id": session_id})
     assert response.status_code == 200
 
@@ -131,6 +227,7 @@ def test_streaming_preserves_newlines_in_list_tokens(monkeypatch):
 
     session_id = "docs-flow-stream-format"
     client.post("/api/chat", json={"message": "What documents are required?", "session_id": session_id})
+    client.post("/api/chat", json={"message": "1", "session_id": session_id})
     response = client.post("/api/chat/stream", json={"message": "1", "session_id": session_id})
     assert response.status_code == 200
 
