@@ -12,7 +12,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import json
 import asyncio
 
@@ -21,10 +21,19 @@ from app.logic.cutoff_engine import get_cutoff
 from app.rag.retriever import retrieve
 from openai import AsyncOpenAI
 from app.config import get_settings
+from app.utils.languages import (
+    DEFAULT_LANGUAGE,
+    SUPPORTED_LANGUAGES,
+    detect_language,
+    detect_language_change_request,
+    get_greeting_message,
+    get_out_of_scope_message,
+)
 
 settings = get_settings()
 
 _async_openai_client: AsyncOpenAI | None = None
+_SESSION_LANGUAGE_BY_ID: dict[str, str] = {}
 
 def _get_async_openai() -> AsyncOpenAI:
     global _async_openai_client
@@ -55,14 +64,441 @@ def _normalize_admission_category_text(text: str) -> str:
 
     return normalized
 
-async def retrieve_and_respond(query: str, language: str = "en") -> str:
+
+_REQUIRED_DOCUMENT_PATTERNS = (
+    re.compile(r"\bdocuments?\b", re.IGNORECASE),
+    re.compile(r"\brequired\s+documents?\b", re.IGNORECASE),
+    re.compile(r"\bdocuments?\s+needed\s+for\s+admission\b", re.IGNORECASE),
+    re.compile(r"\bwhat\s+documents?\s+are\s+required\b", re.IGNORECASE),
+    re.compile(r"పత్ర(ాలు)?", re.IGNORECASE),
+    re.compile(r"दस्तावेज", re.IGNORECASE),
+    re.compile(r"ஆவண", re.IGNORECASE),
+    re.compile(r"कागदपत्र", re.IGNORECASE),
+    re.compile(r"ದಾಖಲೆ", re.IGNORECASE),
+    re.compile(r"নথি|নথিপত্র", re.IGNORECASE),
+    re.compile(r"દસ્તાવેજ", re.IGNORECASE),
+    re.compile(r"(అవసరమైన|కావలసిన)\s*పత్ర", re.IGNORECASE),
+    re.compile(r"आवश्यक\s+दस्तावेज", re.IGNORECASE),
+    re.compile(r"தேவையான\s+ஆவண", re.IGNORECASE),
+    re.compile(r"आवश्यक\s+कागदपत्र", re.IGNORECASE),
+    re.compile(r"ಅಗತ್ಯ\s+ದಾಖಲೆ", re.IGNORECASE),
+    re.compile(r"প্রয়োজনীয়\s+নথি", re.IGNORECASE),
+    re.compile(r"જરૂરી\s+દસ્તાવેજ", re.IGNORECASE),
+)
+
+_AVAILABLE_BRANCHES_TEXT = "CSE, ECE, EEE, IT, MECH, CIVIL, CSE (AI & ML), CSE (Data Science)"
+_AVAILABLE_CATEGORIES_TEXT = "OC, BC-A, BC-B, BC-D, BC-E, SC, ST, EWS"
+
+_EMPTY_MESSAGE_RESPONSES = {
+    "en": "Please ask me something about VNRVJIET admissions!",
+    "hi": "कृपया VNRVJIET प्रवेश के बारे में कुछ पूछें!",
+    "te": "దయచేసి VNRVJIET ప్రవేశాల గురించి ఏదైనా అడగండి!",
+    "ta": "VNRVJIET சேர்க்கை பற்றி ஏதாவது கேளுங்கள்!",
+    "mr": "कृपया VNRVJIET प्रवेशाबद्दल काही विचारा!",
+    "kn": "ದಯವಿಟ್ಟು VNRVJIET ಪ್ರವೇಶಗಳ ಬಗ್ಗೆ ಏನಾದರೂ ಕೇಳಿ!",
+    "bn": "দয়া করে VNRVJIET ভর্তির বিষয়ে কিছু জিজ্ঞাসা করুন!",
+    "gu": "કૃપા કરીને VNRVJIET પ્રવેશ વિશે કંઈક પૂછો!",
+}
+
+_MISSING_BRANCH_PROMPTS = {
+    "en": "Please specify which branch you're asking about.",
+    "hi": "कृपया बताएं आप किस शाखा के बारे में पूछ रहे हैं।",
+    "te": "దయచేసి మీరు ఏ శాఖ గురించి అడుగుతున్నారో పేర్కొనండి.",
+    "ta": "தயவுசெய்து நீங்கள் எந்த கிளையை பற்றி கேட்கிறீர்கள் என்பதை குறிப்பிடுங்கள்.",
+    "mr": "कृपया तुम्ही कोणत्या शाखेबद्दल विचारत आहात ते सांगा.",
+    "kn": "ದಯವಿಟ್ಟು ನೀವು ಯಾವ ಶಾಖೆ ಬಗ್ಗೆ ಕೇಳುತ್ತಿದ್ದೀರಿ ಎಂದು ತಿಳಿಸಿ.",
+    "bn": "দয়া করে আপনি কোন শাখা সম্পর্কে জিজ্ঞাসা করছেন তা উল্লেখ করুন।",
+    "gu": "કૃપા કરીને તમે કઈ શાખા વિશે પૂછો છો તે જણાવો.",
+}
+
+_MISSING_CATEGORY_PROMPTS = {
+    "en": "Please specify your category.",
+    "hi": "कृपया अपनी श्रेणी बताएं।",
+    "te": "దయచేసి మీ వర్గాన్ని పేర్కొనండి.",
+    "ta": "தயவுசெய்து உங்கள் வகையை குறிப்பிடுங்கள்.",
+    "mr": "कृपया तुमची श्रेणी सांगा.",
+    "kn": "ದಯವಿಟ್ಟು ನಿಮ್ಮ ವರ್ಗವನ್ನು ತಿಳಿಸಿ.",
+    "bn": "দয়া করে আপনার বিভাগ উল্লেখ করুন।",
+    "gu": "કૃપા કરીને તમારી શ્રેણી જણાવો.",
+}
+
+_AVAILABLE_BRANCHES_LABELS = {
+    "en": "Available branches",
+    "hi": "उपलब्ध शाखाएँ",
+    "te": "అందుబాటులో ఉన్న శాఖలు",
+    "ta": "கிடைக்கும் கிளைகள்",
+    "mr": "उपलब्ध शाखा",
+    "kn": "ಲಭ್ಯವಿರುವ ಶಾಖೆಗಳು",
+    "bn": "উপলব্ধ শাখাসমূহ",
+    "gu": "ઉપલબ્ધ શાખાઓ",
+}
+
+_AVAILABLE_CATEGORIES_LABELS = {
+    "en": "Available categories",
+    "hi": "उपलब्ध श्रेणियाँ",
+    "te": "అందుబాటులో ఉన్న వర్గాలు",
+    "ta": "கிடைக்கும் வகைகள்",
+    "mr": "उपलब्ध श्रेणी",
+    "kn": "ಲಭ್ಯವಿರುವ ವರ್ಗಗಳು",
+    "bn": "উপলব্ধ বিভাগসমূহ",
+    "gu": "ઉપલબ્ધ શ્રેણીઓ",
+}
+
+_EXAMPLE_LABELS = {
+    "en": "Example",
+    "hi": "उदाहरण",
+    "te": "ఉదాహరణ",
+    "ta": "எடுத்துக்காட்டு",
+    "mr": "उदाहरण",
+    "kn": "ಉದಾಹರಣೆ",
+    "bn": "উদাহরণ",
+    "gu": "ઉદાહરણ",
+}
+
+_MISSING_BRANCH_EXAMPLES = {
+    "en": "What is the cutoff for CSE branch?",
+    "hi": "CSE शाखा का कटऑफ क्या है?",
+    "te": "CSE శాఖకు కట్ ఆఫ్ ఎంత?",
+    "ta": "CSE கிளைக்கு கட்ஆஃப் என்ன?",
+    "mr": "CSE शाखेसाठी कटऑफ किती आहे?",
+    "kn": "CSE ಶಾಖೆಗೆ ಕಟ್‌ಆಫ್ ಎಷ್ಟು?",
+    "bn": "CSE শাখার কাট অফ কত?",
+    "gu": "CSE શાખા માટે કટઓફ કેટલો છે?",
+}
+
+_MISSING_CATEGORY_EXAMPLES = {
+    "en": "What is the BC-D cutoff for CSE?",
+    "hi": "CSE के लिए BC-D श्रेणी का कटऑफ क्या है?",
+    "te": "CSE కి BC-D వర్గం కట్ ఆఫ్ ఎంత?",
+    "ta": "CSE க்கு BC-D வகை கட்ஆஃப் என்ன?",
+    "mr": "CSE साठी BC-D श्रेणीचा कटऑफ किती आहे?",
+    "kn": "CSEಗೆ BC-D ವರ್ಗದ ಕಟ್‌ಆಫ್ ಎಷ್ಟು?",
+    "bn": "CSE-এর জন্য BC-D বিভাগের কাট অফ কত?",
+    "gu": "CSE માટે BC-D શ્રેણીનો કટઓફ કેટલો છે?",
+}
+
+_RETRIEVE_NO_CONTEXT_RESPONSES = {
+    "en": "I am sorry, I do not have that information in my records. Please contact the admissions office.",
+    "hi": "क्षमा करें, मेरे रिकॉर्ड में यह जानकारी उपलब्ध नहीं है। कृपया प्रवेश कार्यालय से संपर्क करें।",
+    "te": "క్షమించండి, నా రికార్డుల్లో ఈ సమాచారం లేదు. దయచేసి ప్రవేశ కార్యాలయాన్ని సంప్రదించండి.",
+    "ta": "மன்னிக்கவும், என் பதிவுகளில் இந்த தகவல் இல்லை. தயவுசெய்து சேர்க்கை அலுவலகத்தை தொடர்புகொள்ளவும்.",
+    "mr": "माफ करा, माझ्या नोंदींमध्ये ही माहिती उपलब्ध नाही. कृपया प्रवेश कार्यालयाशी संपर्क साधा.",
+    "kn": "ಕ್ಷಮಿಸಿ, ನನ್ನ ದಾಖಲೆಗಳಲ್ಲಿ ಈ ಮಾಹಿತಿ ಲಭ್ಯವಿಲ್ಲ. ದಯವಿಟ್ಟು ಪ್ರವೇಶ ಕಚೇರಿಯನ್ನು ಸಂಪರ್ಕಿಸಿ.",
+    "bn": "দুঃখিত, আমার রেকর্ডে এই তথ্য নেই। অনুগ্রহ করে ভর্তি দপ্তরের সাথে যোগাযোগ করুন।",
+    "gu": "માફ કરશો, મારા રેકોર્ડમાં આ માહિતી ઉપલબ્ધ નથી. કૃપા કરીને પ્રવેશ કચેરીનો સંપર્ક કરો.",
+}
+
+_CUTOFF_ENGINE_ERROR_RESPONSES = {
+    "en": "Sorry, there was an error retrieving cutoff data. Please try again or contact support.",
+    "hi": "क्षमा करें, cutoff data प्राप्त करने में त्रुटि हुई। कृपया फिर से प्रयास करें या support से संपर्क करें।",
+    "te": "క్షమించండి, cutoff data పొందడంలో లోపం జరిగింది. దయచేసి మళ్లీ ప్రయత్నించండి లేదా support ను సంప్రదించండి.",
+    "ta": "மன்னிக்கவும், cutoff data பெறும்போது பிழை ஏற்பட்டது. மீண்டும் முயற்சிக்கவும் அல்லது support-ஐ தொடர்புகொள்ளவும்.",
+    "mr": "क्षमस्व, cutoff data मिळवताना त्रुटी आली. कृपया पुन्हा प्रयत्न करा किंवा support शी संपर्क करा.",
+    "kn": "ಕ್ಷಮಿಸಿ, cutoff data ಪಡೆಯುವಾಗ ದೋಷವಾಯಿತು. ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ ಅಥವಾ support ಅನ್ನು ಸಂಪರ್ಕಿಸಿ.",
+    "bn": "দুঃখিত, cutoff data আনতে সমস্যা হয়েছে। আবার চেষ্টা করুন বা support-এর সাথে যোগাযোগ করুন।",
+    "gu": "માફ કરશો, cutoff data મેળવવામાં ભૂલ થઈ. કૃપા કરીને ફરી પ્રયાસ કરો અથવા support નો સંપર્ક કરો.",
+}
+
+_RAG_ERROR_RESPONSES = {
+    "en": "I apologize, but I'm having trouble finding information about that. Please try rephrasing your question or contact our admissions office.",
+    "hi": "क्षमा करें, मुझे इसके बारे में जानकारी खोजने में कठिनाई हो रही है। कृपया अपना प्रश्न दोबारा लिखें या admissions office से संपर्क करें।",
+    "te": "క్షమించండి, దీనిపై సమాచారం కనుగొనడంలో నాకు సమస్య ఉంది. దయచేసి మీ ప్రశ్నను మరోలా అడగండి లేదా admissions office ను సంప్రదించండి.",
+    "ta": "மன்னிக்கவும், இதற்கான தகவலை கண்டுபிடிக்க எனக்கு சிரமமாக உள்ளது. தயவுசெய்து கேள்வியை மாற்றி கேளுங்கள் அல்லது admissions office-ஐ தொடர்புகொள்ளவும்.",
+    "mr": "क्षमस्व, याबद्दलची माहिती शोधण्यात मला अडचण येत आहे. कृपया प्रश्न पुन्हा विचारा किंवा admissions office शी संपर्क साधा.",
+    "kn": "ಕ್ಷಮಿಸಿ, ಇದರ ಬಗ್ಗೆ ಮಾಹಿತಿ ಹುಡುಕುವಲ್ಲಿ ನನಗೆ ತೊಂದರೆ ಆಗುತ್ತಿದೆ. ದಯವಿಟ್ಟು ಪ್ರಶ್ನೆಯನ್ನು ಮರುಬರೆಯಿರಿ ಅಥವಾ admissions office ಅನ್ನು ಸಂಪರ್ಕಿಸಿ.",
+    "bn": "দুঃখিত, এ বিষয়ে তথ্য খুঁজে পেতে আমার সমস্যা হচ্ছে। অনুগ্রহ করে প্রশ্নটি অন্যভাবে করুন বা admissions office-এর সাথে যোগাযোগ করুন।",
+    "gu": "માફ કરશો, આ વિષયની માહિતી શોધવામાં મને મુશ્કેલી આવી રહી છે. કૃપા કરીને પ્રશ્નને ફરીથી લખો અથવા admissions office નો સંપર્ક કરો.",
+}
+
+_STREAMING_ERROR_RESPONSES = {
+    "en": "Sorry, I'm having trouble processing your request. Please try again.",
+    "hi": "क्षमा करें, आपके अनुरोध को प्रोसेस करने में समस्या हो रही है। कृपया फिर से प्रयास करें।",
+    "te": "క్షమించండి, మీ అభ్యర్థనను ప్రాసెస్ చేయడంలో సమస్య ఉంది. దయచేసి మళ్లీ ప్రయత్నించండి.",
+    "ta": "மன்னிக்கவும், உங்கள் கோரிக்கையை செயலாக்குவதில் சிக்கல் உள்ளது. தயவுசெய்து மீண்டும் முயற்சிக்கவும்.",
+    "mr": "क्षमस्व, तुमची विनंती प्रक्रिया करताना अडचण येत आहे. कृपया पुन्हा प्रयत्न करा.",
+    "kn": "ಕ್ಷಮಿಸಿ, ನಿಮ್ಮ ವಿನಂತಿಯನ್ನು ಸಂಸ್ಕರಿಸುವಲ್ಲಿ ತೊಂದರೆ ಆಗುತ್ತಿದೆ. ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+    "bn": "দুঃখিত, আপনার অনুরোধ প্রক্রিয়া করতে সমস্যা হচ্ছে। অনুগ্রহ করে আবার চেষ্টা করুন।",
+    "gu": "માફ કરશો, તમારી વિનંતી પ્રોસેસ કરવામાં મુશ્કેલી આવી રહી છે. કૃપા કરીને ફરી પ્રયાસ કરો.",
+}
+
+_DOCUMENT_PROGRAM_PROMPTS = {
+    "en": "Please select your program:",
+    "hi": "कृपया अपना प्रोग्राम चुनें:",
+    "te": "దయచేసి మీ ప్రోగ్రామ్‌ను ఎంచుకోండి:",
+    "ta": "தயவுசெய்து உங்கள் பிரோகிராமை தேர்ந்தெடுக்கவும்:",
+    "mr": "कृपया तुमचा प्रोग्राम निवडा:",
+    "kn": "ದಯವಿಟ್ಟು ನಿಮ್ಮ ಪ್ರೋಗ್ರಾಂ ಆಯ್ಕೆಮಾಡಿ:",
+    "bn": "অনুগ্রহ করে আপনার প্রোগ্রাম নির্বাচন করুন:",
+    "gu": "કૃપા કરીને તમારો પ્રોગ્રામ પસંદ કરો:",
+}
+
+_DOCUMENT_PROGRAM_DETAILS = {
+    "btech": {
+        "canonical_label": "B.Tech",
+        "labels": {
+            "en": "B.Tech",
+            "hi": "बी.टेक",
+            "te": "బి.టెక్",
+            "ta": "பி.டெக்",
+            "mr": "बी.टेक",
+            "kn": "ಬಿ.ಟೆಕ್",
+            "bn": "বি.টেক",
+            "gu": "બી.ટેક",
+        },
+    },
+    "mtech": {
+        "canonical_label": "M.Tech",
+        "labels": {
+            "en": "M.Tech",
+            "hi": "एम.टेक",
+            "te": "ఎం.టెక్",
+            "ta": "எம்.டெக்",
+            "mr": "एम.टेक",
+            "kn": "ಎಂ.ಟೆಕ್",
+            "bn": "এম.টেক",
+            "gu": "એમ.ટેક",
+        },
+    },
+    "mba_mca": {
+        "canonical_label": "MBA / MCA",
+        "labels": {
+            "en": "MBA / MCA",
+            "hi": "एम.बी.ए / एम.सी.ए",
+            "te": "ఎం.బి.ఏ / ఎం.సి.ఏ",
+            "ta": "எம்பிஏ / எம்சிஏ",
+            "mr": "एम.बी.ए / एम.सी.ए",
+            "kn": "ಎಂಬಿಎ / ಎಂಸಿಎ",
+            "bn": "এমবিএ / এমসিএ",
+            "gu": "એમબીએ / એમસીએ",
+        },
+    },
+}
+
+_DOCUMENT_CATEGORY_PROMPTS = {
+    "en": "Please select your admission category:",
+    "hi": "कृपया अपनी प्रवेश श्रेणी चुनें:",
+    "te": "దయచేసి మీ ప్రవేశ కోటాను ఎంచుకోండి:",
+    "ta": "தயவுசெய்து உங்கள் சேர்க்கை ஒதுக்கீட்டை தேர்ந்தெடுக்கவும்:",
+    "mr": "कृपया तुमची प्रवेश श्रेणी निवडा:",
+    "kn": "ದಯವಿಟ್ಟು ನಿಮ್ಮ ಪ್ರವೇಶ ಕೋಟಾವನ್ನು ಆಯ್ಕೆಮಾಡಿ:",
+    "bn": "অনুগ্রহ করে আপনার ভর্তি বিভাগ নির্বাচন করুন:",
+    "gu": "કૃપા કરીને તમારી પ્રવેશ શ્રેણી પસંદ કરો:",
+}
+
+_DOCUMENT_CATEGORY_DETAILS = {
+    "convener": {
+        "canonical_label": "Convener (Category A)",
+        "labels": {
+            "en": "Convener (Category A)",
+            "hi": "कन्वीनर कोटा",
+            "te": "కన్వీనర్ కోటా",
+            "ta": "கன்வீனர் ஒதுக்கீடு",
+            "mr": "कन्व्हीनर कोटा",
+            "kn": "ಕನ್ವೀನರ್ ಕೋಟಾ",
+            "bn": "কনভেনার কোটা",
+            "gu": "કન્વીનર ક્વોટા",
+        },
+        "prefix": {
+            "en": "For Convener (Category A) admission, the required documents are:",
+            "hi": "कन्वीनर कोटा के लिए आवश्यक दस्तावेज़:",
+            "te": "కన్వీనర్ కోటాకు అవసరమైన పత్రాలు:",
+            "ta": "கன்வீனர் ஒதுக்கீட்டிற்கான தேவையான ஆவணங்கள்:",
+            "mr": "कन्व्हीनर कोट्यासाठी आवश्यक कागदपत्रे:",
+            "kn": "ಕನ್ವೀನರ್ ಕೋಟಾಗೆ ಅಗತ್ಯ ದಾಖಲೆಗಳು:",
+            "bn": "কনভেনার কোটার জন্য প্রয়োজনীয় নথি:",
+            "gu": "કન્વીનર ક્વોટા માટે જરૂરી દસ્તાવેજો:",
+        },
+    },
+    "management": {
+        "canonical_label": "Management (Category B / NRI)",
+        "labels": {
+            "en": "Management (Category B / NRI)",
+            "hi": "मैनेजमेंट कोटा",
+            "te": "మేనేజ్మెంట్ కోటా",
+            "ta": "மேனேஜ்மெண்ட் ஒதுக்கீடு",
+            "mr": "मॅनेजमेंट कोटा",
+            "kn": "ಮ್ಯಾನೇಜ್ಮೆಂಟ್ ಕೋಟಾ",
+            "bn": "ম্যানেজমেন্ট কোটা",
+            "gu": "મેનેજમેન્ટ ક્વોટા",
+        },
+        "prefix": {
+            "en": "For Management (Category B / NRI) admission, the required documents are:",
+            "hi": "मैनेजमेंट कोटा के लिए आवश्यक दस्तावेज़:",
+            "te": "మేనేజ్మెంట్ కోటాకు అవసరమైన పత్రాలు:",
+            "ta": "மேனேஜ்மெண்ட் ஒதுக்கீட்டிற்கான தேவையான ஆவணங்கள்:",
+            "mr": "मॅनेजमेंट कोट्यासाठी आवश्यक कागदपत्रे:",
+            "kn": "ಮ್ಯಾನೇಜ್ಮೆಂಟ್ ಕೋಟಾಗೆ ಅಗತ್ಯ ದಾಖಲೆಗಳು:",
+            "bn": "ম্যানেজমেন্ট কোটার জন্য প্রয়োজনীয় নথি:",
+            "gu": "મેનેજમેન્ટ ક્વોટા માટે જરૂરી દસ્તાવેજો:",
+        },
+    },
+    "supernumerary": {
+        "canonical_label": "Supernumerary Quota",
+        "labels": {
+            "en": "Supernumerary Quota",
+            "hi": "सुपरन्यूमरेरी कोटा",
+            "te": "సూపర్న్యూమరరీ కోటా",
+            "ta": "சூப்பர்நியூமரரி கோட்டா",
+            "mr": "सुपरन्यूमरेरी कोटा",
+            "kn": "ಸೂಪರ್‌ನ್ಯೂಮರರಿ ಕೋಟಾ",
+            "bn": "সুপারনিউমেরারি কোটা",
+            "gu": "સુપરન્યુમરરી ક્વોટા",
+        },
+        "prefix": {
+            "en": "For Supernumerary Quota admission, the required documents are:",
+            "hi": "सुपरन्यूमरेरी कोटा के लिए आवश्यक दस्तावेज़:",
+            "te": "సూపర్న్యూమరరీ కోటాకు అవసరమైన పత్రాలు:",
+            "ta": "சூப்பர்நியூமரரி கோட்டாவிற்கான தேவையான ஆவணங்கள்:",
+            "mr": "सुपरन्यूमरेरी कोट्यासाठी आवश्यक कागदपत्रे:",
+            "kn": "ಸೂಪರ್‌ನ್ಯೂಮರರಿ ಕೋಟಾಗೆ ಅಗತ್ಯ ದಾಖಲೆಗಳು:",
+            "bn": "সুপারনিউমেরারি কোটার জন্য প্রয়োজনীয় নথি:",
+            "gu": "સુપરન્યુમરરી ક્વોટા માટે જરૂરી દસ્તાવેજો:",
+        },
+    },
+}
+
+_DOCUMENT_FLOW_STATE_BY_SESSION: dict[str, dict[str, str]] = {}
+
+
+def _normalize_language_code(language: Optional[str]) -> str:
+    """Return normalized language code with safe fallback."""
+    if not language:
+        return DEFAULT_LANGUAGE
+    normalized = language.strip().lower()
+    if normalized in SUPPORTED_LANGUAGES:
+        return normalized
+    return DEFAULT_LANGUAGE
+
+
+def _is_ambiguous_language_input(text: str) -> bool:
+    """
+    Return True for short/technical follow-ups where language is unclear.
+    Examples: "1", "ok", "CSE cutoff", "BC-D girls 2024".
+    """
+    stripped = text.strip()
+    if not stripped:
+        return True
+    if re.fullmatch(r"[\d\W_]+", stripped):
+        return True
+
+    has_non_ascii = any(ord(char) > 127 for char in stripped)
+    if has_non_ascii:
+        return False
+
+    english_words = re.findall(r"[A-Za-z]+", stripped)
+    return len(english_words) <= 2
+
+
+def _resolve_effective_language(session_id: str, user_message: str, requested_language: str) -> str:
+    """
+    Resolve response language dynamically per turn:
+    1) explicit language-switch request wins,
+    2) non-English detected language switches immediately,
+    3) ambiguous short/technical inputs keep current session language,
+    4) clear English switches to English.
+    """
+    has_session_language = session_id in _SESSION_LANGUAGE_BY_ID
+    session_language = _SESSION_LANGUAGE_BY_ID.get(session_id, _normalize_language_code(requested_language))
+
+    change_target = detect_language_change_request(user_message, session_language)
+    if change_target and change_target != "show_selector" and change_target in SUPPORTED_LANGUAGES:
+        resolved = change_target
+    else:
+        detected = _normalize_language_code(detect_language(user_message))
+        if detected != DEFAULT_LANGUAGE:
+            resolved = detected
+        elif _is_ambiguous_language_input(user_message):
+            resolved = session_language if has_session_language else DEFAULT_LANGUAGE
+        else:
+            resolved = DEFAULT_LANGUAGE
+
+    _SESSION_LANGUAGE_BY_ID[session_id] = resolved
+    return resolved
+
+
+def _get_localized_text(mapping: dict[str, str], language: str) -> str:
+    """Get language-specific string with English fallback."""
+    return mapping.get(language, mapping.get(DEFAULT_LANGUAGE, ""))
+
+
+def _build_missing_branch_response_text(language: str) -> str:
+    """Build localized missing-branch guidance message."""
+    prompt = _get_localized_text(_MISSING_BRANCH_PROMPTS, language)
+    branches_label = _get_localized_text(_AVAILABLE_BRANCHES_LABELS, language)
+    example_label = _get_localized_text(_EXAMPLE_LABELS, language)
+    example = _get_localized_text(_MISSING_BRANCH_EXAMPLES, language)
+    return (
+        f"{prompt} "
+        f"{branches_label}: {_AVAILABLE_BRANCHES_TEXT}.\n\n"
+        f"{example_label}: '{example}'"
+    )
+
+
+def _build_missing_category_response_text(language: str) -> str:
+    """Build localized missing-category guidance message."""
+    prompt = _get_localized_text(_MISSING_CATEGORY_PROMPTS, language)
+    categories_label = _get_localized_text(_AVAILABLE_CATEGORIES_LABELS, language)
+    example_label = _get_localized_text(_EXAMPLE_LABELS, language)
+    example = _get_localized_text(_MISSING_CATEGORY_EXAMPLES, language)
+    return (
+        f"{prompt} "
+        f"{categories_label}: {_AVAILABLE_CATEGORIES_TEXT}.\n\n"
+        f"{example_label}: '{example}'"
+    )
+
+
+def _get_document_program_label(program_key: str, language: str) -> str:
+    """Get localized label for document program option."""
+    details = _DOCUMENT_PROGRAM_DETAILS[program_key]
+    return details["labels"].get(language, details["labels"]["en"])
+
+
+def _get_document_category_label(category_key: str, language: str) -> str:
+    """Get localized label for document category option."""
+    details = _DOCUMENT_CATEGORY_DETAILS[category_key]
+    return details["labels"].get(language, details["labels"]["en"])
+
+
+def _get_document_category_prefix(category_key: str, language: str) -> str:
+    """Get localized response prefix for selected document category."""
+    details = _DOCUMENT_CATEGORY_DETAILS[category_key]
+    return details["prefix"].get(language, details["prefix"]["en"])
+
+
+def _normalize_selection_text(text: str) -> str:
+    """Normalize button/typed selection text for robust matching."""
+    lowered = text.strip().lower()
+    lowered = lowered.replace("&", " and ").replace("/", " ")
+    lowered = re.sub(r"[()\-.:]", " ", lowered)
+    lowered = re.sub(r"\s+", " ", lowered)
+    return lowered.strip()
+
+_LIST_TOPIC_KEYWORDS = (
+    "document",
+    "documents",
+    "required",
+    "requirement",
+    "requirements",
+    "step",
+    "steps",
+    "procedure",
+    "process",
+    "fee",
+    "fees",
+    "breakdown",
+)
+
+_INLINE_NUMBER_MARKER_PATTERN = re.compile(r"(?<!\w)\d{1,2}\.\s+")
+_INLINE_BULLET_MARKER_PATTERN = re.compile(r"[•●▪◦]\s+")
+
+async def retrieve_and_respond(query: str, language: str = "en", additional_instructions: str = "") -> str:
     """Generate AI response using RAG pipeline."""
     
     # Retrieve relevant context
     retrieval_result = retrieve(query, top_k=5)
     
     if not retrieval_result.chunks:
-        return "I don't have specific information about that in my knowledge base. Please contact our admissions office for detailed information."
+        return _get_localized_text(_RETRIEVE_NO_CONTEXT_RESPONSES, language)
     
     # Map language codes to full language names for better LLM understanding
     language_names = {
@@ -78,16 +514,28 @@ async def retrieve_and_respond(query: str, language: str = "en") -> str:
     
     language_name = language_names.get(language, "English")
     
+    additional_block = ""
+    if additional_instructions.strip():
+        additional_block = f"\nAdditional instruction:\n{additional_instructions.strip()}\n"
+    
     # Generate response using GPT with retrieved context
     system_prompt = f"""You are a helpful AI assistant for VNRVJIET (VNR Vignana Jyothi Institute of Engineering and Technology) admissions.
 
 Use the provided context to answer questions accurately. If the context doesn't contain the answer, say so clearly.
 
 IMPORTANT: You MUST respond ONLY in {language_name} language. Do NOT use English unless the user selected English.
+For non-English responses, avoid English words in the final answer except mandatory exam acronyms such as TS EAPCET and JEE.
 
 For Marathi (मराठी), your ENTIRE response must be in Marathi script with NO English sentences.
 
 Keep responses informative but concise. Include specific details like numbers, dates, and procedures when available.
+
+STRICT LIST FORMATTING RULES (MANDATORY):
+- Whenever the answer includes documents, steps, requirements, fee breakdowns, or any multi-item information, format it as a clean list.
+- Use numbered lists (1., 2., 3.) for ordered items.
+- Put each item on a new line.
+- Never combine multiple list items in a single paragraph line.
+- If context is unstructured, first split into individual items, then present as a numbered list.
 
 Canonical admission category hierarchy (STRICT):
 1) Convenor / Category-A
@@ -104,6 +552,7 @@ Rules:
 
 Standard abbreviations (like CSE, ECE, BC-D, OC) can remain as-is.
 
+{additional_block}
 Context:
 {retrieval_result.context_text}"""
 
@@ -135,7 +584,359 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     intent: str = "informational"
-    metadata: dict = {}
+    metadata: dict = Field(default_factory=dict)
+    options: list[dict] = Field(default_factory=list)
+
+
+def _is_required_documents_query(message: str) -> bool:
+    """Return True when user asks required-documents style admission query."""
+    normalized = " ".join(message.lower().split())
+    return any(pattern.search(normalized) for pattern in _REQUIRED_DOCUMENT_PATTERNS)
+
+
+def _extract_document_program_selection(message: str) -> Optional[str]:
+    """Map user selection to canonical admission program."""
+    normalized = re.sub(r"\s+", " ", message.strip().lower())
+    if not normalized:
+        return None
+
+    normalized = normalized.strip(" .:-")
+    normalized_selection = _normalize_selection_text(normalized)
+
+    if normalized in {"1", "option 1", "choice 1"}:
+        return "btech"
+    if normalized in {"2", "option 2", "choice 2"}:
+        return "mtech"
+    if normalized in {"3", "option 3", "choice 3"}:
+        return "mba_mca"
+
+    if normalized in _DOCUMENT_PROGRAM_DETAILS:
+        return normalized
+
+    for program_key, program_details in _DOCUMENT_PROGRAM_DETAILS.items():
+        canonical_label = _normalize_selection_text(program_details["canonical_label"])
+        if normalized_selection == canonical_label:
+            return program_key
+
+        for localized_label in program_details["labels"].values():
+            label_candidate = _normalize_selection_text(localized_label)
+            if normalized_selection == label_candidate:
+                return program_key
+
+    if normalized in {"btech", "b.tech", "b tech"} or re.search(r"\bb\.?\s*tech\b", normalized):
+        return "btech"
+    if normalized in {"mtech", "m.tech", "m tech"} or re.search(r"\bm\.?\s*tech\b", normalized):
+        return "mtech"
+    if (
+        normalized in {"mba", "mca", "mba / mca", "mba/mca", "mba mca", "mba or mca"}
+        or re.search(r"\bmba\b", normalized)
+        or re.search(r"\bmca\b", normalized)
+    ):
+        return "mba_mca"
+
+    if re.search(r"బి\.?\s*టెక్|బిటెక్", normalized):
+        return "btech"
+    if re.search(r"ఎం\.?\s*టెక్|ఎంటెక్", normalized):
+        return "mtech"
+    if re.search(r"ఎంబిఏ|ఎంసీఏ|ఎం\.?\s*బి\.?\s*ఏ|ఎం\.?\s*సి\.?\s*ఏ", normalized):
+        return "mba_mca"
+
+    if re.search(r"बी\.?\s*टेक|बिटेक", normalized):
+        return "btech"
+    if re.search(r"एम\.?\s*टेक|एमटेक", normalized):
+        return "mtech"
+    if re.search(r"एमबीए|एमसीए|एम\.?\s*बी\.?\s*ए|एम\.?\s*सी\.?\s*ए", normalized):
+        return "mba_mca"
+
+    return None
+
+
+def _extract_document_category_selection(message: str) -> Optional[str]:
+    """Map user selection to canonical admission document category."""
+    normalized = re.sub(r"\s+", " ", message.strip().lower())
+    if not normalized:
+        return None
+
+    normalized = normalized.strip(" .:-")
+    normalized_selection = _normalize_selection_text(normalized)
+
+    if normalized in {"1", "option 1", "choice 1"}:
+        return "convener"
+    if normalized in {"2", "option 2", "choice 2"}:
+        return "management"
+    if normalized in {"3", "option 3", "choice 3"}:
+        return "supernumerary"
+
+    if normalized in _DOCUMENT_CATEGORY_DETAILS:
+        return normalized
+
+    for category_key, category_details in _DOCUMENT_CATEGORY_DETAILS.items():
+        canonical_label = _normalize_selection_text(category_details["canonical_label"])
+        if normalized_selection == canonical_label:
+            return category_key
+
+        for localized_label in category_details["labels"].values():
+            label_candidate = _normalize_selection_text(localized_label)
+            if normalized_selection == label_candidate:
+                return category_key
+
+    if re.search(r"\bconvener\b", normalized) or re.search(r"\bcategory\s*-?\s*a\b", normalized):
+        return "convener"
+    if re.search(r"కన్వీన", normalized) or re.search(r"కేటగిరీ\s*ఏ", normalized) or re.search(r"कन्वीन", normalized):
+        return "convener"
+
+    if (
+        re.search(r"\bmanagement\b", normalized)
+        or re.search(r"\bcategory\s*-?\s*b\b", normalized)
+        or re.search(r"\bnri\b", normalized)
+    ):
+        return "management"
+    if re.search(r"మేనేజ్|మెనేజ్|న్రి|ఎన్ఆర్ఐ|కేటగిరీ\s*బి", normalized) or re.search(r"मैनेज|एनआरआई", normalized):
+        return "management"
+
+    if re.search(r"\bsupernumerary\b", normalized):
+        return "supernumerary"
+    if re.search(r"సూపర్.?న్యూమరరీ", normalized) or re.search(r"सुपरन्यूमरेरी", normalized):
+        return "supernumerary"
+
+    return None
+
+
+def _build_document_program_prompt_response(language: str) -> ChatResponse:
+    """Build program selection prompt with clickable options for documents flow."""
+    prompt_text = _get_localized_text(_DOCUMENT_PROGRAM_PROMPTS, language)
+    options: list[dict] = []
+    for program_key in ("btech", "mtech", "mba_mca"):
+        label = _get_document_program_label(program_key, language)
+        options.append({"label": label, "value": program_key})
+
+    prompt_lines = [f"{idx}. {option['label']}" for idx, option in enumerate(options, start=1)]
+    return ChatResponse(
+        response=f"{prompt_text}\n\n" + "\n".join(prompt_lines),
+        intent="informational",
+        metadata={"awaiting_document_program": True},
+        options=options,
+    )
+
+
+def _build_document_category_prompt_response(language: str, selected_program: str) -> ChatResponse:
+    """Build category selection prompt with clickable options for documents flow."""
+    program_label = _get_document_program_label(selected_program, language)
+    prompt_template = _get_localized_text(_DOCUMENT_CATEGORY_PROMPTS, language)
+    prompt_text = prompt_template.format(program=program_label)
+    options: list[dict] = []
+    for category_key in ("convener", "management", "supernumerary"):
+        label = _get_document_category_label(category_key, language)
+        options.append({"label": label, "value": category_key})
+
+    prompt_lines = [f"{idx}. {option['label']}" for idx, option in enumerate(options, start=1)]
+    return ChatResponse(
+        response=f"{prompt_text}\n\n" + "\n".join(prompt_lines),
+        intent="informational",
+        metadata={"awaiting_document_category": True, "document_program": selected_program},
+        options=options,
+    )
+
+
+async def _handle_required_documents_flow(
+    user_message: str,
+    session_id: str,
+    language: str,
+) -> Optional[ChatResponse]:
+    """
+    Enforce mandatory two-step flow before returning required document lists:
+    1) Program selection
+    2) Admission category selection
+    """
+    if _is_required_documents_query(user_message):
+        _DOCUMENT_FLOW_STATE_BY_SESSION[session_id] = {"step": "awaiting_program"}
+        return _build_document_program_prompt_response(language)
+
+    flow_state = _DOCUMENT_FLOW_STATE_BY_SESSION.get(session_id)
+    if not flow_state:
+        return None
+
+    current_step = flow_state.get("step")
+    if current_step == "awaiting_program":
+        selected_program = _extract_document_program_selection(user_message)
+        if not selected_program:
+            return _build_document_program_prompt_response(language)
+
+        flow_state["step"] = "awaiting_category"
+        flow_state["program"] = selected_program
+        _DOCUMENT_FLOW_STATE_BY_SESSION[session_id] = flow_state
+        return _build_document_category_prompt_response(language, selected_program)
+
+    selected_program = flow_state.get("program")
+    if not selected_program or selected_program not in _DOCUMENT_PROGRAM_DETAILS:
+        _DOCUMENT_FLOW_STATE_BY_SESSION[session_id] = {"step": "awaiting_program"}
+        return _build_document_program_prompt_response(language)
+
+    selected_category = _extract_document_category_selection(user_message)
+    if not selected_category:
+        return _build_document_category_prompt_response(language, selected_program)
+
+    _DOCUMENT_FLOW_STATE_BY_SESSION.pop(session_id, None)
+    category_details = _DOCUMENT_CATEGORY_DETAILS[selected_category]
+    program_details = _DOCUMENT_PROGRAM_DETAILS[selected_program]
+    localized_label = _get_document_category_label(selected_category, language)
+    localized_program = _get_document_program_label(selected_program, language)
+    localized_prefix = _get_document_category_prefix(selected_category, language)
+
+    category_prompt = (
+        f"Required documents for {program_details['canonical_label']} program under "
+        f"{category_details['canonical_label']} admission at VNRVJIET.\n"
+        "Return only this selected program and category required admission documents."
+    )
+    additional_instructions = (
+        f"The selected program is {localized_program}. "
+        f"Start exactly with: \"{localized_prefix}\". "
+        "Then list required documents as a clean bulleted list with one item per line. "
+        "Do not include any other program or category."
+    )
+    if language != DEFAULT_LANGUAGE:
+        additional_instructions += (
+            " Use only the selected language for the final response. "
+            "Do not include English words or English translations in parentheses."
+        )
+    response_text = await retrieve_and_respond(
+        category_prompt,
+        language=language,
+        additional_instructions=additional_instructions,
+    )
+
+    if not response_text.strip().lower().startswith(localized_prefix.lower()):
+        response_text = f"{localized_prefix}\n\n{response_text}"
+
+    return ChatResponse(
+        response=response_text,
+        intent="informational",
+        metadata={
+            "document_program": selected_program,
+            "document_program_label": localized_program,
+            "document_category": selected_category,
+            "document_category_label": localized_label,
+        },
+    )
+
+
+def _clean_list_item(item: str) -> str:
+    """Normalize whitespace and punctuation around a list item."""
+    compact = re.sub(r"\s+", " ", item).strip()
+    return compact.strip("-•:; ")
+
+
+def _has_multiline_list(text: str) -> bool:
+    """Check whether text already contains a proper multiline list."""
+    numbered_lines = re.findall(r"(?m)^\s*\d+\.\s+\S+", text)
+    bullet_lines = re.findall(r"(?m)^\s*[-•]\s+\S+", text)
+    return len(numbered_lines) >= 2 or len(bullet_lines) >= 2
+
+
+def _looks_like_list_topic(text: str) -> bool:
+    """Detect topics that should be strongly list-formatted."""
+    lowered = text.lower()
+    return any(keyword in lowered for keyword in _LIST_TOPIC_KEYWORDS)
+
+
+def _extract_inline_numbered_items(text: str) -> Optional[tuple[str, list[str]]]:
+    """Extract inline '1. ... 2. ...' content into structured list items."""
+    matches = list(_INLINE_NUMBER_MARKER_PATTERN.finditer(text))
+    if len(matches) < 2:
+        return None
+
+    heading = text[:matches[0].start()].strip()
+    items: list[str] = []
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        candidate = _clean_list_item(text[start:end])
+        if candidate:
+            items.append(candidate)
+
+    if len(items) < 2:
+        return None
+
+    return heading, items
+
+
+def _extract_inline_bullet_items(text: str) -> Optional[tuple[str, list[str]]]:
+    """Extract inline '• ... • ...' content into structured list items."""
+    matches = list(_INLINE_BULLET_MARKER_PATTERN.finditer(text))
+    if len(matches) < 2:
+        return None
+
+    heading = text[:matches[0].start()].strip()
+    items: list[str] = []
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        candidate = _clean_list_item(text[start:end])
+        if candidate:
+            items.append(candidate)
+
+    if len(items) < 2:
+        return None
+
+    return heading, items
+
+
+def _build_numbered_list(heading: str, items: list[str]) -> str:
+    """Compose a clean numbered list with one item per line."""
+    lines = [f"{idx}. {item}" for idx, item in enumerate(items, start=1)]
+    if heading:
+        return f"{heading}\n\n" + "\n".join(lines)
+    return "\n".join(lines)
+
+
+def _enforce_structured_list_formatting(response_text: str, user_message: str = "") -> str:
+    """
+    Enforce strict list formatting for multi-item responses.
+    Converts inline compact lists into clean multiline numbered lists.
+    """
+    if not response_text:
+        return response_text
+
+    normalized = response_text.replace("\r\n", "\n").strip()
+    if not normalized:
+        return normalized
+
+    if _has_multiline_list(normalized):
+        return normalized
+
+    numbered = _extract_inline_numbered_items(normalized)
+    if numbered:
+        heading, items = numbered
+        return _build_numbered_list(heading, items)
+
+    bullets = _extract_inline_bullet_items(normalized)
+    if bullets:
+        heading, items = bullets
+        return _build_numbered_list(heading, items)
+
+    # Fallback: convert semicolon-separated multi-item text for list-heavy topics.
+    if _looks_like_list_topic(user_message) or _looks_like_list_topic(normalized):
+        heading = ""
+        list_segment = normalized
+        if ":" in normalized:
+            prefix, suffix = normalized.split(":", 1)
+            if suffix.count(";") >= 2:
+                heading = prefix.strip() + ":"
+                list_segment = suffix
+
+        if list_segment.count(";") >= 2:
+            raw_items = [part for part in list_segment.split(";")]
+            items = [_clean_list_item(part) for part in raw_items if _clean_list_item(part)]
+            if len(items) >= 2:
+                return _build_numbered_list(heading, items)
+
+    return normalized
+
+
+def _finalize_chat_response(response: ChatResponse, user_message: str) -> ChatResponse:
+    """Apply final output formatting guarantees before returning to the client."""
+    response.response = _enforce_structured_list_formatting(response.response, user_message)
+    return response
 
 @router.post("/chat")
 async def chat_endpoint(request: ChatRequest) -> ChatResponse:
@@ -145,41 +946,65 @@ async def chat_endpoint(request: ChatRequest) -> ChatResponse:
     """
     try:
         user_message = request.message.strip()
+        session_id = request.session_id or "default"
+        effective_language = _resolve_effective_language(
+            session_id=session_id,
+            user_message=user_message,
+            requested_language=request.language,
+        )
         
         if not user_message:
-            return ChatResponse(
-                response="Please ask me something about VNRVJIET admissions!",
+            return _finalize_chat_response(ChatResponse(
+                response=_get_localized_text(_EMPTY_MESSAGE_RESPONSES, effective_language),
                 intent="greeting"
-            )
+            ), user_message)
         
         logger.info(f"Processing query: {user_message[:100]}...")
+
+        # Handle mandatory document program/category selection flow before generic intent routing.
+        document_flow_response = await _handle_required_documents_flow(
+            user_message=user_message,
+            session_id=session_id,
+            language=effective_language,
+        )
+        if document_flow_response is not None:
+            return _finalize_chat_response(document_flow_response, user_message)
         
         # Classify the user's intent
         intent_result = classify(user_message)
         
         if intent_result.intent.value == "cutoff":
             # Handle cutoff/eligibility queries
-            return await handle_cutoff_query(user_message, intent_result, request.language)
+            return _finalize_chat_response(
+                await handle_cutoff_query(user_message, intent_result, effective_language),
+                user_message,
+            )
         
         elif intent_result.intent.value == "mixed":
             # Handle mixed queries (RAG + cutoff)
-            return await handle_mixed_query(user_message, intent_result, request.language)
+            return _finalize_chat_response(
+                await handle_mixed_query(user_message, intent_result, effective_language),
+                user_message,
+            )
         
         elif intent_result.intent.value == "greeting":
-            return ChatResponse(
-                response=_get_greeting_response(request.language),
+            return _finalize_chat_response(ChatResponse(
+                response=get_greeting_message(effective_language),
                 intent="greeting"
-            )
+            ), user_message)
         
         elif intent_result.intent.value == "out_of_scope":
-            return ChatResponse(
-                response="I can only help with VNRVJIET admissions queries. Please ask about our college programs, cutoffs, or admission procedures.",
+            return _finalize_chat_response(ChatResponse(
+                response=get_out_of_scope_message(effective_language),
                 intent="out_of_scope"
-            )
+            ), user_message)
         
         else:
             # Default to RAG for informational queries
-            return await handle_informational_query(user_message, intent_result, request.language)
+            return _finalize_chat_response(
+                await handle_informational_query(user_message, intent_result, effective_language),
+                user_message,
+            )
             
     except Exception as e:
         logger.error(f"Error processing chat: {e}")
@@ -202,22 +1027,14 @@ async def handle_cutoff_query(user_message: str, intent_result: ClassificationRe
     # Validate required parameters
     if not branch:
         return ChatResponse(
-            response=(
-                "Please specify which branch you're asking about. "
-                "Available branches: CSE, ECE, EEE, IT, MECH, CIVIL, CSE (AI & ML), CSE (Data Science), etc.\n\n"
-                "Example: 'What is the cutoff for CSE branch?'"
-            ),
+            response=_build_missing_branch_response_text(language),
             intent="cutoff",
             metadata={"error": "missing_branch"}
         )
     
     if not category:
         return ChatResponse(
-            response=(
-                "Please specify your category. "
-                "Available categories: OC, BC-A, BC-B, BC-D, BC-E, SC, ST, EWS.\n\n"
-                "Example: 'What is the BC-D cutoff for CSE?'"
-            ),
+            response=_build_missing_category_response_text(language),
             intent="cutoff", 
             metadata={"error": "missing_category"}
         )
@@ -240,19 +1057,7 @@ async def handle_cutoff_query(user_message: str, intent_result: ClassificationRe
         if has_data:
             response_text = result.message
         else:
-            # Data not found - provide helpful suggestions
-            response_text = (
-                f"No cutoff data found for **{branch}** branch, **{category}** category"
-                + (f", **{year}**" if year else "")
-                + (f", **{gender}**" if gender != "Any" else "")
-                + f", {quota} quota.\n\n"
-                "**Possible reasons:**\n"
-                "• Data for this specific combination may not be available\n"
-                "• Try different year (2024, 2025) or category\n"
-                "• Check if branch name is correct (CSE, ECE, IT, etc.)\n\n"
-                "**Available branches:** CSE, ECE, EEE, IT, MECH, CIVIL, CSE (AI & ML), CSE (Data Science)\n"
-                "**Available categories:** OC, BC-A, BC-B, BC-D, BC-E, SC, ST, EWS"
-            )
+            response_text = result.message or _build_missing_category_response_text(language)
         
         return ChatResponse(
             response=response_text,
@@ -282,7 +1087,7 @@ async def handle_cutoff_query(user_message: str, intent_result: ClassificationRe
     except Exception as e:
         logger.error(f"Cutoff engine error: {e}")
         return ChatResponse(
-            response=f"Sorry, there was an error retrieving cutoff data. Please try again or contact support.",
+            response=_get_localized_text(_CUTOFF_ENGINE_ERROR_RESPONSES, language),
             intent="cutoff",
             metadata={"error": str(e)}
         )
@@ -330,24 +1135,14 @@ async def handle_informational_query(user_message: str, intent_result: Classific
     except Exception as e:
         logger.error(f"RAG error: {e}")
         return ChatResponse(
-            response="I apologize, but I'm having trouble finding information about that. Please try rephrasing your question or contact our admissions office.",
+            response=_get_localized_text(_RAG_ERROR_RESPONSES, language),
             intent="informational",
             metadata={"error": str(e)}
         )
 
 def _get_greeting_response(language: str) -> str:
     """Get appropriate greeting response based on language."""
-    
-    greetings = {
-        "en": "Hello! I'm the VNRVJIET Admissions Assistant. I can help you with information about our programs, admission procedures, cutoff ranks, and eligibility criteria. What would you like to know?",
-        "hi": "नमस्ते! मैं VNRVJIET प्रवेश सहायक हूं। मैं आपको हमारे कार्यक्रमों, प्रवेश प्रक्रियाओं, कटऑफ रैंक और पात्रता मानदंडों के बारे में जानकारी देने में मदद कर सकता हूं। आप क्या जानना चाहते हैं?",
-        "te": "హలో! నేను VNRVJIET అడ్మిషన్స్ అసిస్టెంట్. మా ప్రోగ్రామ్స్, అడ్మిషన్ విధానాలు, కట్‌ఆఫ్ ర్యాంకులు మరియు అర్హత ప్రమాణాల గురించి మీకు సమాచారం అందించగలను. మీరు ఏమి తెలుసుకోవాలనుకుంటున్నారు?",
-        "ta": "வணக்கம்! நான் VNRVJIET சேர்க்கை உதவியாளர். எங்கள் நிகழ்ச்சிகள், சேர்க்கை முறைகள், கட் ஆஃப் தரவரிசைகள் மற்றும் தகுதி அளவுகோல்கள் பற்றிய தகவல்களை உங்களுக்கு வழங்க முடியும். நீங்கள் என்ன தெரிந்துகொள்ள விரும்புகிறீர்கள்?",
-        "mr": "नमस्कार! मी VNRVJIET प्रवेश सहाय्यक आहे. मी आमच्या कार्यक्रम, प्रवेश प्रक्रिया, कटऑफ रँक आणि पात्रता निकषांबद्दल माहिती देऊ शकतो. तुम्हाला काय जाणून घ्यायचे आहे?",
-        "kn": "ನಮಸ್ಕಾರ! ನಾನು VNRVJIET ಪ್ರವೇಶ ಸಹಾಯಕ. ನಮ್ಮ ಕಾರ್ಯಕ್ರಮಗಳು, ಪ್ರವೇಶ ವಿಧಾನಗಳು, ಕಟ್‌ಆಫ್ ಶ್ರೇಣಿಗಳು ಮತ್ತು ಅರ್ಹತಾ ಮಾನದಂಡಗಳ ಬಗ್ಗೆ ಮಾಹಿತಿ ನೀಡಬಲ್ಲೆ. ನೀವು ಏನು ತಿಳಿಯಲು ಬಯಸುತ್ತೀರಿ?"
-    }
-    
-    return greetings.get(language, greetings["en"])
+    return get_greeting_message(language)
 
 # Health check endpoint
 @router.get("/health")
@@ -361,6 +1156,13 @@ async def chat_stream_endpoint(request: ChatRequest):
     Streaming chat endpoint that returns Server-Sent Events (SSE).
     This provides a ChatGPT-like typing effect in the frontend.
     """
+    session_id = request.session_id or "default"
+    effective_language = _resolve_effective_language(
+        session_id=session_id,
+        user_message=(request.message or "").strip(),
+        requested_language=request.language,
+    )
+
     try:
         # Process the chat request normally
         response = await chat_endpoint(request)
@@ -369,12 +1171,14 @@ async def chat_stream_endpoint(request: ChatRequest):
         async def generate_stream():
             """Generate streaming response in SSE format."""
             
-            # Split response into tokens (words) for streaming effect
-            words = response.response.split()
+            # Split response while preserving whitespace/newlines (critical for list formatting).
+            stream_chunks = re.findall(r"\S+|\s+", response.response)
+            if not stream_chunks and response.response:
+                stream_chunks = [response.response]
             
-            for i, word in enumerate(words):
-                # Send each word as a streaming token
-                yield f"data: {json.dumps({'token': word + ' ', 'done': False})}\n\n"
+            for chunk in stream_chunks:
+                # Send each chunk as a streaming token
+                yield f"data: {json.dumps({'token': chunk, 'done': False})}\n\n"
                 # Small delay for typing effect
                 await asyncio.sleep(0.05)
             
@@ -383,7 +1187,8 @@ async def chat_stream_endpoint(request: ChatRequest):
                 "done": True,
                 "intent": response.intent,
                 "metadata": response.metadata,
-                "session_id": request.session_id
+                "options": response.options or response.metadata.get("options", []),
+                "session_id": session_id
             }
             yield f"data: {json.dumps(final_data)}\n\n"
             
@@ -403,7 +1208,7 @@ async def chat_stream_endpoint(request: ChatRequest):
         # Return error in SSE format
         async def error_stream():
             error_data = {
-                "error": "Sorry, I'm having trouble processing your request. Please try again.",
+                "error": _get_localized_text(_STREAMING_ERROR_RESPONSES, effective_language),
                 "done": True
             }
             yield f"data: {json.dumps(error_data)}\n\n"
